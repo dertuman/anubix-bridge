@@ -20,6 +20,15 @@ const pendingQuestions = new Map<
   }
 >();
 
+// Active query instances per session (for abort support)
+const activeQueries = new Map<string, ReturnType<typeof query>>();
+
+// Cached slash commands per session
+const sessionCommands = new Map<
+  string,
+  Array<{ name: string; description: string; argHint?: string }>
+>();
+
 function send(ws: WebSocket, payload: WsServerPayload) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(payload));
@@ -74,6 +83,49 @@ export function waitForQuestionAnswer(
   return new Promise((resolve) => {
     pendingQuestions.set(sessionId, { resolve });
   });
+}
+
+/**
+ * Abort a running prompt for a session
+ */
+export function abortPrompt(sessionId: string, ws: WebSocket) {
+  const activeQuery = activeQueries.get(sessionId);
+  if (activeQuery) {
+    activeQuery.interrupt();
+    activeQueries.delete(sessionId);
+
+    send(ws, {
+      type: 'result',
+      result: 'Cancelled by user',
+      sessionId,
+      cancelled: true,
+    });
+    updateSession(sessionId, { status: 'idle' });
+  }
+}
+
+/**
+ * Get cached slash commands for a session.
+ */
+export function getCommands(
+  sessionId: string,
+): Array<{ name: string; description: string; argHint?: string }> {
+  return sessionCommands.get(sessionId) || [];
+}
+
+/**
+ * Fetch and cache slash commands for a session.
+ * Returns the commands, or empty array if unavailable.
+ */
+export async function fetchCommands(
+  sessionId: string,
+): Promise<Array<{ name: string; description: string; argHint?: string }>> {
+  // If we already have commands cached, return them
+  const cached = sessionCommands.get(sessionId);
+  if (cached) return cached;
+
+  // Commands are fetched after the first query completes — see runPrompt
+  return [];
 }
 
 /**
@@ -156,6 +208,9 @@ export async function runPrompt(
 
     const conversation = query(queryOptions);
 
+    // Store active query for abort support
+    activeQueries.set(sessionId, conversation);
+
     for await (const message of conversation) {
       switch (message.type) {
         case 'system': {
@@ -186,6 +241,12 @@ export async function runPrompt(
               input?: Record<string, unknown>;
               id?: string;
             }>;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_creation_input_tokens?: number;
+              cache_read_input_tokens?: number;
+            };
           };
           if (msg?.content) {
             for (const block of msg.content) {
@@ -206,7 +267,7 @@ export async function runPrompt(
         }
 
         case 'result': {
-          // Final result — relay cost, duration, result text
+          // Final result — relay cost, duration, result text, token usage
           const resultMsg = message as {
             subtype?: string;
             result?: string;
@@ -214,6 +275,12 @@ export async function runPrompt(
             duration_ms?: number;
             session_id?: string;
             errors?: string[];
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_creation_input_tokens?: number;
+              cache_read_input_tokens?: number;
+            };
           };
 
           if (
@@ -228,11 +295,24 @@ export async function runPrompt(
               duration: resultMsg.duration_ms
                 ? resultMsg.duration_ms / 1000
                 : undefined,
+              inputTokens: resultMsg.usage?.input_tokens,
+              outputTokens: resultMsg.usage?.output_tokens,
+              cacheReads: resultMsg.usage?.cache_read_input_tokens,
+              cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
             });
           } else if (resultMsg.errors?.length) {
+            // Detect error subtypes
+            const errorText = resultMsg.errors.join('\n');
+            let subtype: string | undefined;
+            if (/rate.?limit/i.test(errorText)) subtype = 'rate_limit';
+            else if (/billing/i.test(errorText)) subtype = 'billing_error';
+            else if (/auth/i.test(errorText)) subtype = 'auth_error';
+            else if (/overloaded/i.test(errorText)) subtype = 'overloaded';
+
             send(ws, {
               type: 'error',
-              message: resultMsg.errors.join('\n'),
+              message: errorText,
+              subtype,
             });
           } else {
             send(ws, {
@@ -243,21 +323,61 @@ export async function runPrompt(
               duration: resultMsg.duration_ms
                 ? resultMsg.duration_ms / 1000
                 : undefined,
+              inputTokens: resultMsg.usage?.input_tokens,
+              outputTokens: resultMsg.usage?.output_tokens,
+              cacheReads: resultMsg.usage?.cache_read_input_tokens,
+              cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
             });
+          }
+
+          // After first successful result, try to cache commands
+          if (!sessionCommands.has(sessionId)) {
+            try {
+              const cmds = await conversation.supportedCommands();
+              if (cmds && Array.isArray(cmds)) {
+                const mapped = cmds.map((c: { name?: string; description?: string; argHint?: string }) => ({
+                  name: c.name || '',
+                  description: c.description || '',
+                  argHint: c.argHint,
+                }));
+                sessionCommands.set(sessionId, mapped);
+                send(ws, { type: 'commands_available', commands: mapped });
+              }
+            } catch {
+              // supportedCommands may not be available — that's OK
+            }
           }
           break;
         }
 
-        default:
-          // stream_event, user replay, compact_boundary — ignore for now
+        default: {
+          // Handle tool progress / status messages if possible
+          const anyMsg = message as Record<string, unknown>;
+          if (anyMsg.type === 'tool_progress' && anyMsg.tool_name) {
+            send(ws, {
+              type: 'tool_progress',
+              toolName: anyMsg.tool_name as string,
+              elapsed: (anyMsg.elapsed_ms as number) || 0,
+            });
+          }
           break;
+        }
       }
     }
   } catch (err) {
     const errMessage =
       err instanceof Error ? err.message : 'Unknown error';
-    send(ws, { type: 'error', message: errMessage });
+
+    // Detect error subtypes from exceptions
+    let subtype: string | undefined;
+    if (/rate.?limit/i.test(errMessage)) subtype = 'rate_limit';
+    else if (/billing/i.test(errMessage)) subtype = 'billing_error';
+    else if (/auth/i.test(errMessage)) subtype = 'auth_error';
+    else if (/overloaded/i.test(errMessage)) subtype = 'overloaded';
+
+    send(ws, { type: 'error', message: errMessage, subtype });
   } finally {
+    activeQueries.delete(sessionId);
     updateSession(sessionId, { status: 'idle' });
   }
 }

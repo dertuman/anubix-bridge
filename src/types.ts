@@ -27,10 +27,15 @@ export interface WsClientQuestionAnswer {
   answers: Record<string, string>;
 }
 
+export interface WsClientAbort {
+  type: 'abort';
+}
+
 export type WsClientPayload =
   | WsClientMessage
   | WsClientApproval
-  | WsClientQuestionAnswer;
+  | WsClientQuestionAnswer
+  | WsClientAbort;
 
 // --- WebSocket: Server → Client ---
 
@@ -48,6 +53,12 @@ export interface WsToolStart {
 export interface WsToolEnd {
   type: 'tool_end';
   toolName: string;
+}
+
+export interface WsToolProgress {
+  type: 'tool_progress';
+  toolName: string;
+  elapsed: number;
 }
 
 export interface WsApprovalRequest {
@@ -70,11 +81,17 @@ export interface WsResult {
   sessionId: string;
   cost?: number;
   duration?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReads?: number;
+  cacheWrites?: number;
+  cancelled?: boolean;
 }
 
 export interface WsError {
   type: 'error';
   message: string;
+  subtype?: string;
 }
 
 export interface WsSessionInit {
@@ -83,12 +100,19 @@ export interface WsSessionInit {
   model?: string;
 }
 
+export interface WsCommandsAvailable {
+  type: 'commands_available';
+  commands: Array<{ name: string; description: string; argHint?: string }>;
+}
+
 export type WsServerPayload =
   | WsTextDelta
   | WsToolStart
   | WsToolEnd
+  | WsToolProgress
   | WsApprovalRequest
   | WsAskQuestion
   | WsResult
   | WsError
-  | WsSessionInit;
+  | WsSessionInit
+  | WsCommandsAvailable;

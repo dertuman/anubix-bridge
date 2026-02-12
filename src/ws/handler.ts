@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { resolveApproval, resolveQuestion, runPrompt } from '../agent.js';
+import { abortPrompt, getCommands, resolveApproval, resolveQuestion, runPrompt } from '../agent.js';
 import { getSession } from '../sessions.js';
 import type { WsClientPayload, WsServerPayload } from '../types.js';
 
@@ -24,6 +24,12 @@ export function handleWebSocket(ws: WebSocket, sessionId: string) {
     type: 'session_init',
     sessionId: session.id,
   });
+
+  // Send cached commands if available
+  const commands = getCommands(sessionId);
+  if (commands.length > 0) {
+    send(ws, { type: 'commands_available', commands });
+  }
 
   ws.on('message', async (raw) => {
     let payload: WsClientPayload;
@@ -67,6 +73,11 @@ export function handleWebSocket(ws: WebSocket, sessionId: string) {
 
       case 'question_answer': {
         resolveQuestion(sessionId, payload.answers);
+        break;
+      }
+
+      case 'abort': {
+        abortPrompt(sessionId, ws);
         break;
       }
 
