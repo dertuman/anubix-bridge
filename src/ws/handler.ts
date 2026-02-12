@@ -53,7 +53,7 @@ export function handleWebSocket(ws: WebSocket, sessionId: string) {
         }
 
         // Run the prompt (streams responses back via WebSocket)
-        await runPrompt(sessionId, payload.content, ws);
+        await runPrompt(sessionId, payload.content, ws, payload.images);
         break;
       }
 

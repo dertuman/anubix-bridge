@@ -13,6 +13,7 @@ export interface SessionState {
 export interface WsClientMessage {
   type: 'message';
   content: string;
+  images?: Array<{ base64: string; mimeType: string }>;
 }
 
 export interface WsClientApproval {

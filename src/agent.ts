@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type WebSocket from 'ws';
 
 import { getSession, updateSession } from './sessions.js';
@@ -86,6 +86,7 @@ export async function runPrompt(
   sessionId: string,
   prompt: string,
   ws: WebSocket,
+  images?: Array<{ base64: string; mimeType: string }>,
 ) {
   const session = getSession(sessionId);
   if (!session) {
@@ -98,9 +99,41 @@ export async function runPrompt(
   let fullText = '';
 
   try {
+    // Build prompt — multimodal content blocks when images are provided
+    let resolvedPrompt: Parameters<typeof query>[0]['prompt'];
+    if (images && images.length > 0) {
+      // SDK expects AsyncIterable<SDKUserMessage> for multimodal content
+      // Capture session for closure to avoid undefined warning
+      const currentSession = session;
+      async function* multimodalPrompt(): AsyncIterable<SDKUserMessage> {
+        yield {
+          type: 'user' as const,
+          message: {
+            role: 'user' as const,
+            content: [
+              ...images!.map((img) => ({
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type: img.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                  data: img.base64,
+                },
+              })),
+              { type: 'text' as const, text: prompt },
+            ],
+          },
+          parent_tool_use_id: null,
+          session_id: currentSession.conversationId || '',
+        };
+      }
+      resolvedPrompt = multimodalPrompt();
+    } else {
+      resolvedPrompt = prompt;
+    }
+
     // Build query options per SDK API
     const queryOptions: Parameters<typeof query>[0] = {
-      prompt,
+      prompt: resolvedPrompt,
       options: {
         cwd: session.repoPath,
         allowedTools: [
