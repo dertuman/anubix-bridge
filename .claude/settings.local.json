@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(node --version:*)",
+      "Bash(curl:*)",
+      "Bash(npx -y wscat -c \"ws://localhost:3456/ws/3679cb2f-43f1-4fc6-ba84-6d9bae4e2f3b?key=longpasswordsincreasesecurity\" -x '{\"\"type\"\":\"\"message\"\",\"\"content\"\":\"\"Say hello in one sentence\"\"}' --wait 15)",
+      "Bash(node -e:*)",
+      "Bash(cloudflared:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"C:/Program Files \\(x86\\)/cloudflared/cloudflared.exe\" tunnel --url http://localhost:3456)",
+      "WebSearch",
+      "WebFetch(domain:community.cloudflare.com)",
+      "WebFetch(domain:developers.cloudflare.com)"
+    ]
+  }
+}
