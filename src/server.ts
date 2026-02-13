@@ -6,6 +6,8 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
 
+import { startProxyServer, shutdownPreview } from './preview.js';
+import previewRouter from './routes/preview.js';
 import sessionsRouter from './routes/sessions.js';
 import { handleWebSocket } from './ws/handler.js';
 
@@ -50,6 +52,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/sessions', sessionsRouter);
+app.use('/api/preview', previewRouter);
 
 // --- HTTP + WebSocket server ---
 const server = createServer(app);
@@ -77,20 +80,48 @@ server.on('upgrade', (request: IncomingMessage, socket, head) => {
   }
 
   const sessionId = pathMatch[1];
+  const lastSeqParam = url.searchParams.get('lastSeq');
+  const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request, sessionId);
+    wss.emit('connection', ws, request, sessionId, lastSeq);
   });
 });
 
 // The 'connection' event is emitted with custom args from handleUpgrade + emit
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(wss as any).on('connection', (ws: any, _request: any, sessionId: string) => {
-  console.log(`WebSocket connected: session ${sessionId}`);
-  handleWebSocket(ws, sessionId);
+(wss as any).on('connection', (ws: any, _request: any, sessionId: string, lastSeq?: number) => {
+  console.log(`WebSocket connected: session ${sessionId}${lastSeq !== undefined ? ` (lastSeq=${lastSeq})` : ''}`);
+  handleWebSocket(ws, sessionId, lastSeq);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws/:sessionId?key=...`);
+  console.log(`Default Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
+  await startProxyServer();
+});
+
+// --- Graceful shutdown ---
+function gracefulShutdown() {
+  console.log('\nShutting down…');
+  shutdownPreview();
+  server.close(() => {
+    process.exit(0);
+  });
+  // Force exit after 5s if server.close hangs
+  setTimeout(() => process.exit(1), 5000);
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+// Prevent SDK unhandled rejections (e.g. after interrupt()) from crashing the process
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  if (/closed|abort|interrupt/i.test(msg)) {
+    console.log(`Suppressed expected rejection: ${msg}`);
+    return;
+  }
+  console.error('Unhandled rejection:', reason);
 });

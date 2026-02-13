@@ -3,7 +3,8 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 
-import type { SessionState } from './types.js';
+import { clearSessionLog } from './messageLog.js';
+import type { ClaudeMode, SessionState } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -63,13 +64,14 @@ loadFromDisk();
 
 // --- Public API ---
 
-export function createSession(repoPath: string, name?: string): SessionState {
+export function createSession(repoPath: string, name?: string, mode?: ClaudeMode): SessionState {
   const id = uuidv4();
   const session: SessionState = {
     id,
     name: name || repoPath.split(/[\\/]/).pop() || 'Untitled',
     repoPath,
     status: 'idle',
+    mode,
     createdAt: Date.now(),
   };
   sessions.set(id, session);
@@ -99,6 +101,9 @@ export function updateSession(
 
 export function deleteSession(id: string): boolean {
   const deleted = sessions.delete(id);
-  if (deleted) flushToDisk();
+  if (deleted) {
+    clearSessionLog(id);
+    flushToDisk();
+  }
   return deleted;
 }

@@ -18,9 +18,10 @@ router.get('/', (_req, res) => {
 
 // Create a new session
 router.post('/', (req, res) => {
-  const { repoPath, name } = req.body as {
+  const { repoPath, name, mode } = req.body as {
     repoPath?: string;
     name?: string;
+    mode?: string;
   };
 
   if (!repoPath) {
@@ -34,7 +35,13 @@ router.post('/', (req, res) => {
     return;
   }
 
-  const session = createSession(repoPath, name);
+  // Validate mode if provided
+  if (mode && mode !== 'sdk' && mode !== 'cli') {
+    res.status(400).json({ error: 'mode must be "sdk" or "cli"' });
+    return;
+  }
+
+  const session = createSession(repoPath, name, mode as 'sdk' | 'cli' | undefined);
   res.status(201).json({ data: session });
 });
 

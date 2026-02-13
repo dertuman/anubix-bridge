@@ -12,7 +12,17 @@
       "WebSearch",
       "WebFetch(domain:community.cloudflare.com)",
       "WebFetch(domain:developers.cloudflare.com)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npx expo export --no-emit)",
+      "Bash(eas.json)",
+      "Bash(.env \")",
+      "Bash(ls:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(npx expo install expo-share-intent expo-linking)",
+      "Bash(find:*)"
     ]
   }
 }

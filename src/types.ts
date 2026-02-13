@@ -1,3 +1,5 @@
+export type ClaudeMode = 'sdk' | 'cli';
+
 // Session state stored by the bridge
 export interface SessionState {
   id: string;
@@ -5,6 +7,7 @@ export interface SessionState {
   repoPath: string;
   conversationId?: string;
   status: 'idle' | 'busy' | 'error';
+  mode?: ClaudeMode;
   createdAt: number;
 }
 
@@ -80,6 +83,7 @@ export interface WsResult {
   result: string;
   sessionId: string;
   cost?: number;
+  free?: boolean;
   duration?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -105,6 +109,29 @@ export interface WsCommandsAvailable {
   commands: Array<{ name: string; description: string; argHint?: string }>;
 }
 
+export interface WsReplayStart {
+  type: 'replay_start';
+  fromSeq: number;
+  toSeq: number;
+}
+
+export interface WsReplayEnd {
+  type: 'replay_end';
+}
+
+export interface WsSessionStatus {
+  type: 'session_status';
+  sessionId: string;
+  status: SessionState['status'];
+  hasPendingApproval: boolean;
+  hasPendingQuestion: boolean;
+}
+
+export interface WsSessionCleared {
+  type: 'session_cleared';
+  sessionId: string;
+}
+
 export type WsServerPayload =
   | WsTextDelta
   | WsToolStart
@@ -115,4 +142,37 @@ export type WsServerPayload =
   | WsResult
   | WsError
   | WsSessionInit
-  | WsCommandsAvailable;
+  | WsCommandsAvailable
+  | WsReplayStart
+  | WsReplayEnd
+  | WsSessionStatus
+  | WsSessionCleared;
+
+// --- Preview ---
+
+export interface PreviewState {
+  sessionId: string;
+  command: string;
+  port: number;
+  status: 'starting' | 'running' | 'stopped' | 'error';
+  pid?: number;
+  error?: string;
+  startedAt: number;
+}
+
+export interface PreviewStartRequest {
+  sessionId: string;
+  command?: string;
+  port?: number;
+}
+
+export interface PreviewStatusResponse {
+  active: boolean;
+  sessionId?: string;
+  command?: string;
+  port?: number;
+  status?: PreviewState['status'];
+  pid?: number;
+  error?: string;
+  startedAt?: number;
+}

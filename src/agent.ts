@@ -1,8 +1,10 @@
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type WebSocket from 'ws';
 
+import { BRIDGE_COMMANDS } from './commands.js';
+import { appendMessage } from './messageLog.js';
 import { getSession, updateSession } from './sessions.js';
-import type { WsServerPayload } from './types.js';
+import type { ClaudeMode, SessionState, WsServerPayload } from './types.js';
 
 // Pending approval state per session
 const pendingApprovals = new Map<
@@ -23,16 +25,74 @@ const pendingQuestions = new Map<
 // Active query instances per session (for abort support)
 const activeQueries = new Map<string, ReturnType<typeof query>>();
 
+// Sessions that were aborted — so the catch block in runPrompt can suppress the expected error
+const abortedSessions = new Set<string>();
+
 // Cached slash commands per session
 const sessionCommands = new Map<
   string,
   Array<{ name: string; description: string; argHint?: string }>
 >();
 
+// Active WebSocket per session — allows reconnects to pick up a running prompt
+const sessionSockets = new Map<string, WebSocket>();
+
+export function registerSocket(sessionId: string, ws: WebSocket) {
+  sessionSockets.set(sessionId, ws);
+}
+
+export function unregisterSocket(sessionId: string, ws: WebSocket) {
+  // Only remove if it's still the same socket (avoid race with a new connection)
+  if (sessionSockets.get(sessionId) === ws) {
+    sessionSockets.delete(sessionId);
+  }
+}
+
+function sendToSession(sessionId: string, payload: WsServerPayload) {
+  const seq = appendMessage(sessionId, payload);
+  const short = sessionId.slice(0, 8);
+  const ws = sessionSockets.get(sessionId);
+  if (ws && ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ ...payload, seq }));
+    console.log(`[${short}] seq=${seq} type=${payload.type} → sent`);
+  } else {
+    console.log(`[${short}] seq=${seq} type=${payload.type} → buffered (no socket)`);
+  }
+}
+
 function send(ws: WebSocket, payload: WsServerPayload) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(payload));
   }
+}
+
+/**
+ * Check if a session has a pending tool approval.
+ */
+export function hasPendingApproval(sessionId: string): boolean {
+  return pendingApprovals.has(sessionId);
+}
+
+/**
+ * Check if a session has a pending question.
+ */
+export function hasPendingQuestion(sessionId: string): boolean {
+  return pendingQuestions.has(sessionId);
+}
+
+// --- Claude mode helpers ---
+
+function resolveMode(session: SessionState): ClaudeMode {
+  return session.mode || (process.env.CLAUDE_MODE as ClaudeMode) || 'sdk';
+}
+
+function buildEnvForMode(mode: ClaudeMode): Record<string, string | undefined> {
+  if (mode === 'cli') {
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+    return env;
+  }
+  return { ...process.env };
 }
 
 /**
@@ -88,13 +148,14 @@ export function waitForQuestionAnswer(
 /**
  * Abort a running prompt for a session
  */
-export function abortPrompt(sessionId: string, ws: WebSocket) {
+export function abortPrompt(sessionId: string, _ws?: WebSocket) {
   const activeQuery = activeQueries.get(sessionId);
   if (activeQuery) {
+    abortedSessions.add(sessionId);
     activeQuery.interrupt();
     activeQueries.delete(sessionId);
 
-    send(ws, {
+    sendToSession(sessionId, {
       type: 'result',
       result: 'Cancelled by user',
       sessionId,
@@ -137,12 +198,12 @@ export async function fetchCommands(
 export async function runPrompt(
   sessionId: string,
   prompt: string,
-  ws: WebSocket,
+  _ws: WebSocket,
   images?: Array<{ base64: string; mimeType: string }>,
 ) {
   const session = getSession(sessionId);
   if (!session) {
-    send(ws, { type: 'error', message: 'Session not found' });
+    sendToSession(sessionId, { type: 'error', message: 'Session not found' });
     return;
   }
 
@@ -183,6 +244,11 @@ export async function runPrompt(
       resolvedPrompt = prompt;
     }
 
+    // Resolve Claude mode (sdk or cli) and build env
+    const mode = resolveMode(session);
+    const env = buildEnvForMode(mode);
+    console.log(`[${sessionId}] mode=${mode}, ANTHROPIC_API_KEY in env: ${'ANTHROPIC_API_KEY' in env}`);
+
     // Build query options per SDK API
     const queryOptions: Parameters<typeof query>[0] = {
       prompt: resolvedPrompt,
@@ -198,6 +264,7 @@ export async function runPrompt(
           'WebSearch',
           'WebFetch',
         ],
+        env,
       },
     };
 
@@ -220,7 +287,7 @@ export async function runPrompt(
               conversationId: message.session_id,
             });
           }
-          send(ws, {
+          sendToSession(sessionId, {
             type: 'session_init',
             sessionId,
             model:
@@ -252,10 +319,10 @@ export async function runPrompt(
             for (const block of msg.content) {
               if (block.type === 'text' && block.text) {
                 fullText += block.text;
-                send(ws, { type: 'text_delta', text: block.text });
+                sendToSession(sessionId, { type: 'text_delta', text: block.text });
               }
               if (block.type === 'tool_use' && block.name) {
-                send(ws, {
+                sendToSession(sessionId, {
                   type: 'tool_start',
                   toolName: block.name,
                   toolInput: (block.input as Record<string, unknown>) || {},
@@ -287,11 +354,12 @@ export async function runPrompt(
             resultMsg.subtype === 'success' &&
             resultMsg.result
           ) {
-            send(ws, {
+            sendToSession(sessionId, {
               type: 'result',
               result: resultMsg.result,
               sessionId,
               cost: resultMsg.total_cost_usd,
+              free: mode === 'cli' || undefined,
               duration: resultMsg.duration_ms
                 ? resultMsg.duration_ms / 1000
                 : undefined,
@@ -309,17 +377,18 @@ export async function runPrompt(
             else if (/auth/i.test(errorText)) subtype = 'auth_error';
             else if (/overloaded/i.test(errorText)) subtype = 'overloaded';
 
-            send(ws, {
+            sendToSession(sessionId, {
               type: 'error',
               message: errorText,
               subtype,
             });
           } else {
-            send(ws, {
+            sendToSession(sessionId, {
               type: 'result',
               result: resultMsg.result || '',
               sessionId,
               cost: resultMsg.total_cost_usd,
+              free: mode === 'cli' || undefined,
               duration: resultMsg.duration_ms
                 ? resultMsg.duration_ms / 1000
                 : undefined,
@@ -333,18 +402,21 @@ export async function runPrompt(
           // After first successful result, try to cache commands
           if (!sessionCommands.has(sessionId)) {
             try {
+              console.log(`[${sessionId.slice(0, 8)}] Fetching supportedCommands...`);
               const cmds = await conversation.supportedCommands();
+              console.log(`[${sessionId.slice(0, 8)}] supportedCommands returned:`, JSON.stringify(cmds)?.slice(0, 200));
               if (cmds && Array.isArray(cmds)) {
                 const mapped = cmds.map((c: { name?: string; description?: string; argHint?: string }) => ({
                   name: c.name || '',
                   description: c.description || '',
                   argHint: c.argHint,
                 }));
+                console.log(`[${sessionId.slice(0, 8)}] Cached ${mapped.length} SDK commands`);
                 sessionCommands.set(sessionId, mapped);
-                send(ws, { type: 'commands_available', commands: mapped });
+                sendToSession(sessionId, { type: 'commands_available', commands: [...BRIDGE_COMMANDS, ...mapped] });
               }
-            } catch {
-              // supportedCommands may not be available — that's OK
+            } catch (err) {
+              console.error(`[${sessionId.slice(0, 8)}] supportedCommands failed:`, err);
             }
           }
           break;
@@ -354,7 +426,7 @@ export async function runPrompt(
           // Handle tool progress / status messages if possible
           const anyMsg = message as Record<string, unknown>;
           if (anyMsg.type === 'tool_progress' && anyMsg.tool_name) {
-            send(ws, {
+            sendToSession(sessionId, {
               type: 'tool_progress',
               toolName: anyMsg.tool_name as string,
               elapsed: (anyMsg.elapsed_ms as number) || 0,
@@ -365,6 +437,11 @@ export async function runPrompt(
       }
     }
   } catch (err) {
+    // If session was aborted, suppress the expected "Query closed" error
+    if (abortedSessions.has(sessionId)) {
+      return;
+    }
+
     const errMessage =
       err instanceof Error ? err.message : 'Unknown error';
 
@@ -375,8 +452,9 @@ export async function runPrompt(
     else if (/auth/i.test(errMessage)) subtype = 'auth_error';
     else if (/overloaded/i.test(errMessage)) subtype = 'overloaded';
 
-    send(ws, { type: 'error', message: errMessage, subtype });
+    sendToSession(sessionId, { type: 'error', message: errMessage, subtype });
   } finally {
+    abortedSessions.delete(sessionId);
     activeQueries.delete(sessionId);
     updateSession(sessionId, { status: 'idle' });
   }
