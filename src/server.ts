@@ -5,6 +5,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
+import type WebSocket from 'ws';
 
 import { startProxyServer, shutdownPreview } from './preview.js';
 import previewRouter from './routes/preview.js';
@@ -58,6 +59,21 @@ app.use('/api/preview', previewRouter);
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
+// --- WebSocket heartbeat (30s) — detect dead connections ---
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const heartbeatInterval = setInterval(() => {
+  for (const ws of wss.clients) {
+    const sock = ws as WebSocket & { isAlive?: boolean };
+    if (sock.isAlive === false) {
+      console.log('Heartbeat: terminating dead connection');
+      sock.terminate();
+      continue;
+    }
+    sock.isAlive = false;
+    sock.ping();
+  }
+}, HEARTBEAT_INTERVAL_MS);
+
 // Handle WebSocket upgrade with auth + session routing
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
@@ -105,7 +121,9 @@ server.listen(PORT, async () => {
 // --- Graceful shutdown ---
 function gracefulShutdown() {
   console.log('\nShutting down…');
+  clearInterval(heartbeatInterval);
   shutdownPreview();
+  wss.close();
   server.close(() => {
     process.exit(0);
   });

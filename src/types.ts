@@ -34,11 +34,16 @@ export interface WsClientAbort {
   type: 'abort';
 }
 
+export interface WsClientPing {
+  type: 'ping';
+}
+
 export type WsClientPayload =
   | WsClientMessage
   | WsClientApproval
   | WsClientQuestionAnswer
-  | WsClientAbort;
+  | WsClientAbort
+  | WsClientPing;
 
 // --- WebSocket: Server → Client ---
 
@@ -132,6 +137,11 @@ export interface WsSessionCleared {
   sessionId: string;
 }
 
+export interface WsPong {
+  type: 'pong';
+  timestamp: number;
+}
+
 export type WsServerPayload =
   | WsTextDelta
   | WsToolStart
@@ -146,7 +156,8 @@ export type WsServerPayload =
   | WsReplayStart
   | WsReplayEnd
   | WsSessionStatus
-  | WsSessionCleared;
+  | WsSessionCleared
+  | WsPong;
 
 // --- Preview ---
 

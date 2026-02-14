@@ -4,7 +4,7 @@ import type WebSocket from 'ws';
 import { BRIDGE_COMMANDS } from './commands.js';
 import { appendMessage } from './messageLog.js';
 import { getSession, updateSession } from './sessions.js';
-import type { ClaudeMode, SessionState, WsServerPayload } from './types.js';
+import type { ClaudeMode, SessionState, WsApprovalRequest, WsAskQuestion, WsServerPayload } from './types.js';
 
 // Pending approval state per session
 const pendingApprovals = new Map<
@@ -22,6 +22,10 @@ const pendingQuestions = new Map<
   }
 >();
 
+// Last approval/question payloads per session — for re-sending on reconnect
+const lastApprovalPayloads = new Map<string, WsApprovalRequest>();
+const lastQuestionPayloads = new Map<string, WsAskQuestion>();
+
 // Active query instances per session (for abort support)
 const activeQueries = new Map<string, ReturnType<typeof query>>();
 
@@ -38,6 +42,13 @@ const sessionCommands = new Map<
 const sessionSockets = new Map<string, WebSocket>();
 
 export function registerSocket(sessionId: string, ws: WebSocket) {
+  const existing = sessionSockets.get(sessionId);
+  if (existing && existing !== ws) {
+    // Don't explicitly close — the old socket will be cleaned up by heartbeat
+    // or by the frontend closing it. Sending close(4001) here would cause a
+    // reconnection loop if the frontend doesn't yet handle that code.
+    console.log(`[${sessionId.slice(0, 8)}] Replacing socket reference (old socket left to close naturally)`);
+  }
   sessionSockets.set(sessionId, ws);
 }
 
@@ -80,6 +91,34 @@ export function hasPendingQuestion(sessionId: string): boolean {
   return pendingQuestions.has(sessionId);
 }
 
+/**
+ * Get the stored approval payload for re-sending on reconnect.
+ */
+export function getLastApprovalPayload(sessionId: string): WsApprovalRequest | undefined {
+  return lastApprovalPayloads.get(sessionId);
+}
+
+/**
+ * Get the stored question payload for re-sending on reconnect.
+ */
+export function getLastQuestionPayload(sessionId: string): WsAskQuestion | undefined {
+  return lastQuestionPayloads.get(sessionId);
+}
+
+/**
+ * Store an approval payload for re-sending on reconnect.
+ */
+export function storeApprovalPayload(sessionId: string, payload: WsApprovalRequest) {
+  lastApprovalPayloads.set(sessionId, payload);
+}
+
+/**
+ * Store a question payload for re-sending on reconnect.
+ */
+export function storeQuestionPayload(sessionId: string, payload: WsAskQuestion) {
+  lastQuestionPayloads.set(sessionId, payload);
+}
+
 // --- Claude mode helpers ---
 
 function resolveMode(session: SessionState): ClaudeMode {
@@ -106,6 +145,7 @@ export function resolveApproval(
   if (pending) {
     pending.resolve(decision);
     pendingApprovals.delete(sessionId);
+    lastApprovalPayloads.delete(sessionId);
   }
 }
 
@@ -120,6 +160,7 @@ export function resolveQuestion(
   if (pending) {
     pending.resolve(answers);
     pendingQuestions.delete(sessionId);
+    lastQuestionPayloads.delete(sessionId);
   }
 }
 

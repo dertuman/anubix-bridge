@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, getCommands, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
+import { abortPrompt, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
@@ -25,6 +25,10 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
   // Register this socket so runPrompt always uses the latest connection
   registerSocket(sessionId, ws);
 
+  // Mark socket alive for heartbeat detection
+  (ws as any).isAlive = true;
+  ws.on('pong', () => { (ws as any).isAlive = true; });
+
   // 1. Send session init (direct, not buffered)
   send(ws, {
     type: 'session_init',
@@ -32,13 +36,29 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
   });
 
   // 2. Send session status with pending flags (direct)
+  const pendingApproval = hasPendingApproval(sessionId);
+  const pendingQuestion = hasPendingQuestion(sessionId);
   send(ws, {
     type: 'session_status',
     sessionId: session.id,
     status: session.status,
-    hasPendingApproval: hasPendingApproval(sessionId),
-    hasPendingQuestion: hasPendingQuestion(sessionId),
+    hasPendingApproval: pendingApproval,
+    hasPendingQuestion: pendingQuestion,
   });
+
+  // 2b. Re-send stored approval/question payloads so the frontend can show them
+  if (pendingApproval) {
+    const approvalPayload = getLastApprovalPayload(sessionId);
+    if (approvalPayload) {
+      send(ws, approvalPayload);
+    }
+  }
+  if (pendingQuestion) {
+    const questionPayload = getLastQuestionPayload(sessionId);
+    if (questionPayload) {
+      send(ws, questionPayload);
+    }
+  }
 
   // 3. Replay missed messages if lastSeq provided
   if (lastSeq !== undefined && lastSeq >= 0) {
@@ -127,6 +147,11 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
 
       case 'abort': {
         abortPrompt(sessionId, ws);
+        break;
+      }
+
+      case 'ping': {
+        send(ws, { type: 'pong', timestamp: Date.now() });
         break;
       }
 
