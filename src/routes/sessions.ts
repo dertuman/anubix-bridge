@@ -1,6 +1,8 @@
+import { execFile } from 'child_process';
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 
 import {
   createSession,
@@ -8,6 +10,8 @@ import {
   getSession,
   listSessions,
 } from '../sessions.js';
+
+const execFileAsync = promisify(execFile);
 
 const router = Router();
 
@@ -45,12 +49,33 @@ router.get('/repos', (_req, res) => {
 
 // Create a new session
 router.post('/', (req, res) => {
-  const { repoPath: rawPath, name, mode } = req.body as {
+  const { repoPath: rawPath, repoPaths: rawRepoPaths, name, mode } = req.body as {
     repoPath?: string;
+    repoPaths?: string[];
     name?: string;
     mode?: string;
   };
 
+  // Validate mode if provided
+  if (mode && mode !== 'sdk' && mode !== 'cli') {
+    res.status(400).json({ error: 'mode must be "sdk" or "cli"' });
+    return;
+  }
+
+  // Multi-folder workspace: repoPaths takes priority
+  if (rawRepoPaths && Array.isArray(rawRepoPaths) && rawRepoPaths.length >= 2) {
+    const resolved = rawRepoPaths.map((p) => resolveRepoPath(p));
+    const missing = resolved.filter((p) => !fs.existsSync(p));
+    if (missing.length > 0) {
+      res.status(400).json({ error: `Paths do not exist: ${missing.join(', ')}` });
+      return;
+    }
+    const session = createSession(resolved[0], name, mode as 'sdk' | 'cli' | undefined, resolved);
+    res.status(201).json({ data: session });
+    return;
+  }
+
+  // Single-folder session (backward compatible)
   if (!rawPath) {
     res.status(400).json({ error: 'repoPath is required' });
     return;
@@ -61,12 +86,6 @@ router.post('/', (req, res) => {
   // Validate the path exists
   if (!fs.existsSync(repoPath)) {
     res.status(400).json({ error: `Path does not exist: ${repoPath}` });
-    return;
-  }
-
-  // Validate mode if provided
-  if (mode && mode !== 'sdk' && mode !== 'cli') {
-    res.status(400).json({ error: 'mode must be "sdk" or "cli"' });
     return;
   }
 
@@ -82,6 +101,33 @@ router.get('/:id', (req, res) => {
     return;
   }
   res.json({ data: session });
+});
+
+// Git pull for a session's repo(s)
+router.post('/:id/pull', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const paths = session.repoPaths && session.repoPaths.length >= 2
+    ? session.repoPaths
+    : [session.repoPath];
+
+  const results: Array<{ path: string; output?: string; error?: string }> = [];
+
+  for (const repoPath of paths) {
+    try {
+      const { stdout, stderr } = await execFileAsync('git', ['pull'], { cwd: repoPath });
+      results.push({ path: repoPath, output: (stdout + stderr).trim() });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      results.push({ path: repoPath, error: msg });
+    }
+  }
+
+  res.json({ data: results });
 });
 
 // Delete a session

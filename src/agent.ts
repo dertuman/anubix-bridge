@@ -253,6 +253,18 @@ export async function runPrompt(
   let fullText = '';
 
   try {
+    // Build workspace context prefix for multi-folder sessions
+    let workspacePrefix = '';
+    if (session.repoPaths && session.repoPaths.length >= 2) {
+      const folderList = session.repoPaths.map((p) => `- ${p}`).join('\n');
+      workspacePrefix =
+        `[Workspace Context] This session spans multiple project folders:\n` +
+        `${folderList}\n` +
+        `Working directory: ${session.repoPath} (common parent)\n\n`;
+    }
+
+    const effectivePrompt = workspacePrefix ? workspacePrefix + prompt : prompt;
+
     // Build prompt — multimodal content blocks when images are provided
     let resolvedPrompt: Parameters<typeof query>[0]['prompt'];
     if (images && images.length > 0) {
@@ -273,7 +285,7 @@ export async function runPrompt(
                   data: img.base64,
                 },
               })),
-              { type: 'text' as const, text: prompt },
+              { type: 'text' as const, text: effectivePrompt },
             ],
           },
           parent_tool_use_id: null,
@@ -282,7 +294,7 @@ export async function runPrompt(
       }
       resolvedPrompt = multimodalPrompt();
     } else {
-      resolvedPrompt = prompt;
+      resolvedPrompt = effectivePrompt;
     }
 
     // Resolve Claude mode (sdk or cli) and build env

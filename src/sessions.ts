@@ -1,10 +1,35 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 
 import { clearSessionLog } from './messageLog.js';
 import type { ClaudeMode, SessionState } from './types.js';
+
+/**
+ * Compute the deepest common parent directory for a list of absolute paths.
+ */
+export function computeCommonParent(paths: string[]): string {
+  if (paths.length === 0) return '';
+  if (paths.length === 1) return paths[0];
+
+  // Normalise separators to forward-slash for splitting, then convert back
+  const splitPaths = paths.map((p) => p.replace(/[\\/]+/g, '/').split('/'));
+  const minLen = Math.min(...splitPaths.map((s) => s.length));
+
+  const common: string[] = [];
+  for (let i = 0; i < minLen; i++) {
+    const segment = splitPaths[0][i];
+    if (splitPaths.every((s) => s[i] === segment)) {
+      common.push(segment);
+    } else {
+      break;
+    }
+  }
+
+  // Rebuild using OS separator
+  return common.join(sep) || sep;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -64,12 +89,31 @@ loadFromDisk();
 
 // --- Public API ---
 
-export function createSession(repoPath: string, name?: string, mode?: ClaudeMode): SessionState {
+export function createSession(repoPath: string, name?: string, mode?: ClaudeMode, repoPaths?: string[]): SessionState {
   const id = uuidv4();
+
+  // Multi-folder workspace: derive repoPath from common parent
+  let effectiveRepoPath = repoPath;
+  let effectiveRepoPaths: string[] | undefined;
+  let autoName = name;
+
+  if (repoPaths && repoPaths.length >= 2) {
+    effectiveRepoPath = computeCommonParent(repoPaths);
+    effectiveRepoPaths = repoPaths;
+    if (!autoName) {
+      autoName = repoPaths.map((p) => p.split(/[\\/]/).pop()).join(' + ');
+    }
+  }
+
+  if (!autoName) {
+    autoName = effectiveRepoPath.split(/[\\/]/).pop() || 'Untitled';
+  }
+
   const session: SessionState = {
     id,
-    name: name || repoPath.split(/[\\/]/).pop() || 'Untitled',
-    repoPath,
+    name: autoName,
+    repoPath: effectiveRepoPath,
+    ...(effectiveRepoPaths ? { repoPaths: effectiveRepoPaths } : {}),
     status: 'idle',
     mode,
     createdAt: Date.now(),

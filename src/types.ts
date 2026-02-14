@@ -5,6 +5,7 @@ export interface SessionState {
   id: string;
   name: string;
   repoPath: string;
+  repoPaths?: string[];
   conversationId?: string;
   status: 'idle' | 'busy' | 'error';
   mode?: ClaudeMode;
