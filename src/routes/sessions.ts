@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import fs from 'fs';
+import path from 'path';
 
 import {
   createSession,
@@ -10,24 +11,52 @@ import {
 
 const router = Router();
 
+const REPOS_BASE_PATH = process.env.REPOS_BASE_PATH || '';
+
+/** Resolve a repo path — if it's not absolute, try joining with REPOS_BASE_PATH */
+function resolveRepoPath(input: string): string {
+  if (path.isAbsolute(input)) return input;
+  if (REPOS_BASE_PATH) return path.join(REPOS_BASE_PATH, input);
+  return input;
+}
+
 // List all sessions
 router.get('/', (_req, res) => {
   const sessions = listSessions();
   res.json({ data: sessions });
 });
 
+// List available repos from REPOS_BASE_PATH
+router.get('/repos', (_req, res) => {
+  if (!REPOS_BASE_PATH || !fs.existsSync(REPOS_BASE_PATH)) {
+    res.json({ data: [], basePath: REPOS_BASE_PATH || null });
+    return;
+  }
+  try {
+    const entries = fs.readdirSync(REPOS_BASE_PATH, { withFileTypes: true });
+    const repos = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => ({ name: e.name, path: path.join(REPOS_BASE_PATH, e.name) }));
+    res.json({ data: repos, basePath: REPOS_BASE_PATH });
+  } catch {
+    res.json({ data: [], basePath: REPOS_BASE_PATH });
+  }
+});
+
 // Create a new session
 router.post('/', (req, res) => {
-  const { repoPath, name, mode } = req.body as {
+  const { repoPath: rawPath, name, mode } = req.body as {
     repoPath?: string;
     name?: string;
     mode?: string;
   };
 
-  if (!repoPath) {
+  if (!rawPath) {
     res.status(400).json({ error: 'repoPath is required' });
     return;
   }
+
+  const repoPath = resolveRepoPath(rawPath);
 
   // Validate the path exists
   if (!fs.existsSync(repoPath)) {

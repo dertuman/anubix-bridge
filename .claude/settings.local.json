@@ -22,7 +22,13 @@
       "Bash(ls:*)",
       "WebFetch(domain:github.com)",
       "Bash(npx expo install expo-share-intent expo-linking)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(netstat:*)",
+      "Bash(ss:*)",
+      "Bash(tasklist:*)",
+      "Bash(powershell.exe -Command \"Get-Service *cloud* 2>$null; if \\(-not $? { Write-Host ''No cloudflared service found'' }\")",
+      "Bash(powershell.exe -Command:*)",
+      "Bash(\"/c/Program Files \\(x86\\)/cloudflared/cloudflared.exe\" service install eyJhIjoiNjhiMjRmMDczMWM0Yjg1ZTQ2NjEyY2EwNjFiOGFjY2YiLCJ0IjoiMmYwNTBkNzAtNDg4NC00NWRmLWI5YmUtMGU0MDA2ODhhMjM3IiwicyI6Ik5UWTRZelk1TkRNdFpXSXdNUzAwWkdZeUxXSXlOR1l0TmpoallUVTNOR0kyTW1SbCJ9)"
     ]
   }
 }
