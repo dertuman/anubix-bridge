@@ -55,6 +55,8 @@ function loadFromDisk() {
         delete s.conversationId;
         // Can't be busy after restart
         if (s.status === 'busy') s.status = 'idle';
+        // Backfill lastActiveAt for sessions created before this field existed
+        if (!s.lastActiveAt) s.lastActiveAt = s.createdAt;
         sessions.set(s.id, s);
       }
       console.log(`Loaded ${sessions.size} session(s) from disk`);
@@ -109,6 +111,7 @@ export function createSession(repoPath: string, name?: string, mode?: ClaudeMode
     autoName = effectiveRepoPath.split(/[\\/]/).pop() || 'Untitled';
   }
 
+  const now = Date.now();
   const session: SessionState = {
     id,
     name: autoName,
@@ -116,7 +119,8 @@ export function createSession(repoPath: string, name?: string, mode?: ClaudeMode
     ...(effectiveRepoPaths ? { repoPaths: effectiveRepoPaths } : {}),
     status: 'idle',
     mode,
-    createdAt: Date.now(),
+    createdAt: now,
+    lastActiveAt: now,
   };
   sessions.set(id, session);
   flushToDisk();
@@ -128,7 +132,9 @@ export function getSession(id: string): SessionState | undefined {
 }
 
 export function listSessions(): SessionState[] {
-  return Array.from(sessions.values());
+  return Array.from(sessions.values()).sort(
+    (a, b) => b.lastActiveAt - a.lastActiveAt,
+  );
 }
 
 export function updateSession(

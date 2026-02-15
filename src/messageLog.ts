@@ -8,7 +8,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const MESSAGES_DIR = join(__dirname, '..', 'data', 'messages');
-const BUFFER_LIMIT = 1000;
 const FLUSH_DEBOUNCE_MS = 500;
 
 export interface SequencedMessage {
@@ -100,14 +99,17 @@ export function appendMessage(sessionId: string, payload: WsServerPayload): numb
   const log = getOrCreateLog(sessionId);
   const seq = log.nextSeq++;
   log.messages.push({ seq, payload });
-
-  // Trim oldest messages if over buffer limit
-  if (log.messages.length > BUFFER_LIMIT) {
-    log.messages = log.messages.slice(log.messages.length - BUFFER_LIMIT);
-  }
-
   flushToDisk(sessionId);
   return seq;
+}
+
+/**
+ * Get all messages for a session.
+ */
+export function getAllMessages(sessionId: string): SequencedMessage[] {
+  const log = logs.get(sessionId);
+  if (!log) return [];
+  return log.messages;
 }
 
 /**

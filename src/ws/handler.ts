@@ -2,7 +2,7 @@ import type WebSocket from 'ws';
 
 import { abortPrompt, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
-import { clearSessionLog, getMessagesAfter } from '../messageLog.js';
+import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
 import { getSession, updateSession } from '../sessions.js';
 import type { WsClientPayload, WsServerPayload } from '../types.js';
@@ -96,6 +96,21 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           send(ws, { type: 'error', message: 'Empty message' });
           return;
         }
+
+        // Log the user message into the message log so both apps see it
+        const userPayload: WsServerPayload = {
+          type: 'user_message',
+          content: payload.content.trim(),
+          images: payload.images,
+          timestamp: Date.now(),
+        };
+        const userSeq = appendMessage(sessionId, userPayload);
+
+        // Update lastActiveAt on the session
+        updateSession(sessionId, { lastActiveAt: Date.now() });
+
+        // Broadcast user message seq back so the sending client can track it
+        send(ws, { ...userPayload, seq: userSeq } as any);
 
         // Intercept /clear command
         if (payload.content.trim() === '/clear') {

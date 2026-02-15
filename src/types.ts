@@ -10,6 +10,7 @@ export interface SessionState {
   status: 'idle' | 'busy' | 'error';
   mode?: ClaudeMode;
   createdAt: number;
+  lastActiveAt: number;
 }
 
 // --- WebSocket: Client → Server ---
@@ -143,6 +144,13 @@ export interface WsPong {
   timestamp: number;
 }
 
+export interface WsUserMessage {
+  type: 'user_message';
+  content: string;
+  images?: Array<{ base64: string; mimeType: string }>;
+  timestamp: number;
+}
+
 export type WsServerPayload =
   | WsTextDelta
   | WsToolStart
@@ -158,7 +166,8 @@ export type WsServerPayload =
   | WsReplayEnd
   | WsSessionStatus
   | WsSessionCleared
-  | WsPong;
+  | WsPong
+  | WsUserMessage;
 
 // --- Preview ---
 

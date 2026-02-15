@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
+import { getAllMessages, getMessagesAfter } from '../messageLog.js';
 import {
   createSession,
   deleteSession,
@@ -128,6 +129,28 @@ router.post('/:id/pull', async (req, res) => {
   }
 
   res.json({ data: results });
+});
+
+// Get messages for a session
+// GET /api/sessions/:id/messages           → all messages
+// GET /api/sessions/:id/messages?after=SEQ  → messages after given seq (exclusive)
+router.get('/:id/messages', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const afterParam = req.query.after as string | undefined;
+  const messages = afterParam !== undefined
+    ? getMessagesAfter(req.params.id, parseInt(afterParam, 10))
+    : getAllMessages(req.params.id);
+
+  res.json({
+    data: messages,
+    sessionId: req.params.id,
+    count: messages.length,
+  });
 });
 
 // Delete a session
