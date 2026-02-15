@@ -1,14 +1,37 @@
 import { spawn, type ChildProcess, execSync } from 'child_process';
 import http from 'http';
+import net from 'net';
 import httpProxy from 'http-proxy';
 
 import { getSession } from './sessions.js';
 import type { PreviewState, PreviewStatusResponse } from './types.js';
 
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT || '3457', 10);
+const FALLBACK_PORT = parseInt(process.env.PREVIEW_FALLBACK_PORT || '3000', 10);
 const MAX_LOG_LINES = 200;
 const READY_TIMEOUT_MS = 3000;
 const READY_PATTERNS = [/localhost/i, /ready/i, /compiled/i, /listening/i, /started/i];
+
+/** Check if something is listening on a given port */
+function isPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(500);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
+}
 
 let state: PreviewState | null = null;
 let proc: ChildProcess | null = null;
@@ -35,18 +58,25 @@ export function startProxyServer(): Promise<void> {
       }
     });
 
-    proxyServer = http.createServer((req, res) => {
-      if (!state || state.status === 'stopped') {
-        res.writeHead(503, { 'Content-Type': 'text/plain' });
-        res.end('503 No preview active');
+    proxyServer = http.createServer(async (req, res) => {
+      // If a managed dev server is running, use its port
+      if (state && state.status === 'running') {
+        proxy.web(req, res, { target: `http://127.0.0.1:${state.port}` });
         return;
       }
-      if (state.status === 'starting') {
+      if (state && state.status === 'starting') {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
         res.end('502 Dev server starting…');
         return;
       }
-      proxy.web(req, res, { target: `http://127.0.0.1:${state.port}` });
+      // No managed dev server — check if something is already listening on the fallback port
+      const fallbackPort = state?.port || FALLBACK_PORT;
+      if (await isPortListening(fallbackPort)) {
+        proxy.web(req, res, { target: `http://127.0.0.1:${fallbackPort}` });
+        return;
+      }
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('503 No preview active — nothing listening on port ' + fallbackPort);
     });
 
     proxyServer.on('upgrade', (req, socket, head) => {
