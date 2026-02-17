@@ -1,288 +1,115 @@
-# Claude Code Bridge
+# Anubix Platform — Architecture & State
 
-An Express + WebSocket server that acts as a bridge to control Claude Code remotely. Wraps the `@anthropic-ai/claude-agent-sdk` to allow mobile apps and remote clients to interact with Claude Code through a REST API and WebSocket connections.
+## What Anubix Is
 
-**Developed by [TALKARTECH LTD](https://talkartech.com)**
+A platform that lets non-technical people build and manage full-stack web apps through conversation. Users talk to AI via a native app or web app. The AI writes code, configures services, and deploys — no terminal, no IDE, no git knowledge required.
 
-## Prerequisites
+## Repositories
 
-- **Node.js 18+**
-- **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com)
+Three repos:
 
-## Quick Start
+1. **`anubix-bridge`** (this repo, formerly `claude-code-bridge`) — Runs on Fly.io machines. Express + WebSocket server. The connection between clients and Claude Code. Each user gets their own machine with a full workspace.
+2. **`anubix-web`** — Browser client. Users connect to the bridge from here to build and manage their apps.
+3. **`anubix-native`** — React Native mobile client (iOS/Android). Same functionality as web, on your phone.
 
-### 1. Install dependencies
+Plus the template:
 
-```bash
-npm install
-```
-
-### 2. Configure environment
-
-Copy `.env.example` to `.env` and fill in:
-
-```env
-ANTHROPIC_API_KEY=sk-ant-your-real-key-here
-BRIDGE_API_KEY=your-shared-secret
-PORT=3456
-```
-
-| Variable            | Description                                                          |
-| ------------------- | -------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key (used server-side to call Claude)             |
-| `BRIDGE_API_KEY`    | A shared secret your client app uses to authenticate with the bridge |
-| `PORT`              | Server port (defaults to `3456`)                                     |
-
-> **Important:** `BRIDGE_API_KEY` is NOT your Anthropic key. It's a password you choose that your client app sends to authenticate with the bridge server.
-
-### 3. Start the server
-
-**Development** (auto-reloads on changes):
-
-```bash
-npm run dev
-```
-
-**Production:**
-
-```bash
-npm run build
-npm start
-```
-
-You should see:
-
-```
-Bridge server running on http://localhost:3456
-WebSocket endpoint: ws://localhost:3456/ws/:sessionId?key=...
-```
-
-### 4. Verify it works
-
-```bash
-curl http://localhost:3456/api/health -H "x-api-key: your-shared-secret"
-```
-
-Expected: `{"status":"ok","version":"1.0.0","uptime":...}`
-
-## API Reference
-
-All HTTP endpoints require authentication via the `x-api-key` header or `?key=` query parameter.
-
-### REST Endpoints
-
-| Method   | Endpoint            | Description         |
-| -------- | ------------------- | ------------------- |
-| `GET`    | `/api/health`       | Health check        |
-| `GET`    | `/api/sessions`     | List all sessions   |
-| `POST`   | `/api/sessions`     | Create a session    |
-| `GET`    | `/api/sessions/:id` | Get session details |
-| `DELETE` | `/api/sessions/:id` | Delete a session    |
-
-#### Create Session
-
-```bash
-curl -X POST http://localhost:3456/api/sessions \
-  -H "x-api-key: your-shared-secret" \
-  -H "Content-Type: application/json" \
-  -d '{"repoPath": "C:/path/to/your/project", "name": "my-session"}'
-```
-
-Response:
-
-```json
-{
-  "data": {
-    "id": "uuid-here",
-    "name": "my-session",
-    "repoPath": "C:/path/to/your/project",
-    "status": "idle",
-    "createdAt": 1770900000000
-  }
-}
-```
-
-### WebSocket
-
-Connect to `ws://localhost:3456/ws/:sessionId?key=your-shared-secret`
-
-#### Client -> Server Messages
-
-| Type              | Payload                                             | Description                   |
-| ----------------- | --------------------------------------------------- | ----------------------------- |
-| `message`         | `{ type: "message", content: "your prompt" }`       | Send a prompt to Claude       |
-| `approval`        | `{ type: "approval", decision: "allow" \| "deny" }` | Approve/deny a tool execution |
-| `question_answer` | `{ type: "question_answer", answers: {...} }`       | Answer a question from Claude |
-
-#### Server -> Client Messages
-
-| Type               | Description                                                   |
-| ------------------ | ------------------------------------------------------------- |
-| `session_init`     | Connection established, includes session ID and model         |
-| `text_delta`       | Streaming text chunk from Claude                              |
-| `tool_start`       | Claude is executing a tool (includes `toolName`, `toolInput`) |
-| `tool_end`         | Tool execution completed                                      |
-| `approval_request` | Claude needs permission to run a tool                         |
-| `ask_question`     | Claude is asking a question                                   |
-| `result`           | Final result with cost and duration                           |
-| `error`            | Error message                                                 |
-
-#### WebSocket Test (Node.js)
-
-```javascript
-const WebSocket = require("ws");
-const ws = new WebSocket(
-  "ws://localhost:3456/ws/SESSION_ID?key=your-shared-secret",
-);
-
-ws.on("open", () => {
-  console.log("Connected");
-  ws.send(JSON.stringify({ type: "message", content: "Say hello" }));
-});
-
-ws.on("message", (data) => {
-  console.log("Response:", JSON.parse(data.toString()));
-});
-```
-
-## Exposing to the Internet (Cloudflare Tunnel)
-
-To access the bridge from a mobile app or remote client, you need to expose it via a tunnel.
-
-### Option A: Quick Tunnel (testing, random URL)
-
-No account needed. URL changes on every restart.
-
-```bash
-cloudflared tunnel --url http://localhost:3456
-```
-
-On Windows, if `cloudflared` isn't in PATH:
-
-```powershell
-"C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:3456
-```
-
-This gives you a temporary URL like `https://random-words.trycloudflare.com`.
-
-### Option B: Named Tunnel (production, stable URL)
-
-Requires a domain on Cloudflare (a `.xyz` domain costs ~$2).
-
-1. **Install cloudflared:** [Download](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-
-   ```bash
-   winget install cloudflare.cloudflared
-   ```
-
-2. **Create a tunnel** in the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/):
-   - Go to Networks > Tunnels > Create a tunnel
-   - Name it and install the connector (run the provided command in an admin terminal)
-
-3. **Add a public hostname route** in the tunnel config:
-   | Field | Value |
-   |---|---|
-   | Subdomain | `bridge` (or your choice) |
-   | Domain | Your Cloudflare domain |
-   | Type | `HTTP` |
-   | URL | `localhost:3456` |
-
-4. Your stable URL is now `https://bridge.talkartech.co.uk`
-
-> **Note:** The domain must use Cloudflare's nameservers. Partial/CNAME setup requires a Business plan. If your domain uses another DNS provider (e.g., Vercel), the easiest option is to buy a cheap domain directly on Cloudflare.
-
-### Connecting Your Client App
-
-Once the tunnel is running:
-
-- **REST:** `https://bridge.talkartech.co.uk/api/sessions`
-- **WebSocket:** `wss://bridge.talkartech.co.uk/ws/:sessionId?key=your-shared-secret`
-
-All HTTP requests need the `x-api-key: your-shared-secret` header. WebSocket connections pass the key as a query parameter.
-
-#### Example Connection
-
-For example, if your bridge is hosted at `bridge.talkartech.co.uk`:
-
-**Test the health endpoint:**
-
-```bash
-curl https://bridge.talkartech.co.uk/api/health -H "x-api-key: your-shared-secret"
-```
-
-**Create a session:**
-
-```bash
-curl -X POST https://bridge.talkartech.co.uk/api/sessions \
-  -H "x-api-key: your-shared-secret" \
-  -H "Content-Type: application/json" \
-  -d '{"repoPath": "C:/Users/alex9/Documents/GitHub/my-project", "name": "mobile-session"}'
-```
-
-**Connect via WebSocket (Node.js example):**
-
-```javascript
-const WebSocket = require("ws");
-const ws = new WebSocket(
-  "wss://bridge.talkartech.co.uk/ws/SESSION_ID?key=your-shared-secret",
-);
-
-ws.on("open", () => {
-  console.log("Connected to bridge.talkartech.co.uk");
-  ws.send(
-    JSON.stringify({
-      type: "message",
-      content: "What files are in this repo?",
-    }),
-  );
-});
-
-ws.on("message", (data) => {
-  console.log("Response:", JSON.parse(data.toString()));
-});
-```
-
-## Project Structure
-
-```
-src/
-  server.ts          # Express + WebSocket server entry point
-  agent.ts           # Claude agent interaction (prompt execution, streaming)
-  sessions.ts        # Session state management (in-memory store)
-  types.ts           # TypeScript type definitions
-  routes/
-    sessions.ts      # REST API route handlers
-  ws/
-    handler.ts       # WebSocket message routing
-```
+4. **`talkartech-fullstack-template-supabase`** — Opinionated Next.js + Clerk + Supabase starter. Gets copied onto the Fly.io machine when a user clicks "Create App".
 
 ## Architecture
 
 ```
-Client App (mobile/web)
-    |
-    |-- REST API (HTTPS) --> Create/list/delete sessions
-    |-- WebSocket (WSS)  --> Real-time prompt/response streaming
-    |
-Cloudflare Tunnel (HTTPS/WSS termination)
-    |
-Bridge Server (Express + WS on localhost:3456)
-    |
-Claude Agent SDK --> Anthropic API
+anubix-web / anubix-native
+    ↓ WebSocket
+anubix-bridge (Fly.io machine, one per user)
+    ↓
+Claude Code SDK → Anthropic API
+    ↓
+Full terminal access on the machine
+    ↓
+/workspace/project (user's app, running via next dev)
 ```
 
-- **Multi-session support** - Multiple concurrent Claude Code sessions
-- **Real-time streaming** - WebSocket for immediate message/response relay
-- **API key authentication** - Shared secret on all endpoints
-- **Session resumption** - Stores conversation IDs for multi-turn conversations
-- **Tool integration** - Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch
+## How It Works — The User Flow
 
-## License & Credits
+1. User opens Anubix (web or native) and clicks **"Create App"**
+2. A copy of the web template gets slapped onto their Fly.io machine
+3. `next dev` starts running → user sees it live in the preview window
+4. In the preview window, user goes through the **Setup Wizard** (4 steps, all in-browser)
+5. They do have to create accounts (Clerk, Supabase, GitHub, Vercel) — but this is actually a **selling point**: they own everything, crystal clear instructions for each step
+6. They hit **Deploy** → site is live immediately
+7. They go back to the chat screen and start prompting away — Claude Code edits their app in real-time
 
-This project is developed and maintained by **TALKARTECH LTD**.
+### The Preview
 
-For questions or support, visit [talkartech.com](https://talkartech.com).
+- Works on both computer and phone
+- Shows the live `next dev` output from the Fly.io machine
+- Setup wizard runs inside the preview itself
+- Still need to figure out: tunneling and how to make it cheap
 
----
+## The Template — Setup Wizard (`/setup`)
 
-© TALKARTECH LTD. All rights reserved.
+Four steps, all done from the browser — no CLI, no terminal:
+
+1. **Auth** — Paste Clerk publishable + secret keys
+2. **Database** — Paste Supabase `.env.local` block (auto-detects URL + publishable key), manually paste secret key
+3. **Connect** — Enable Clerk's native third-party auth in Supabase (replaces deprecated JWT templates), create profiles table via SQL Editor
+4. **Deploy** — Paste GitHub fine-grained token + Vercel token → one click → creates GitHub repo, pushes all files via REST API with real-time SSE progress bar, imports on Vercel, sets env vars, triggers deployment
+
+### Key Technical Choices
+- Supabase new keys only: `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY` and `SUPABASE_SECRET_DEFAULT_KEY` (not the deprecated anon/service_role names)
+- Clerk ↔ Supabase: Native third-party auth, not JWT templates. Uses `accessToken` callback in Supabase client
+- Supabase Storage for all file uploads (replaced Digital Ocean Spaces)
+- GitHub fine-grained tokens: Need Administration + Contents (both Read and write), All repositories access
+- Safety: Won't overwrite repos with >2 commits. Repo name checked in real-time with debounce
+
+## The Unsolved Piece: Pushing Changes After Initial Deploy
+
+The gap: After the initial deploy, users keep making changes via Anubix chat → Claude Code edits files on Fly.io → but those changes never reach GitHub/Vercel → live site stays stale.
+
+Proposed solution: During initial deploy, also `git init` the workspace and configure the remote with the user's GitHub token. Then when the user says "deploy my changes" in Anubix chat, Claude Code runs `git add . && git commit -m "..." && git push origin main`. Vercel auto-deploys from the push. No extra tokens, no extra UI.
+
+What needs building:
+- After GitHub push succeeds in step 4, initialize git locally on the Fly.io workspace (remote, credentials, initial commit)
+- Optionally: a "Deploy" button in the Anubix app UI as a shortcut (in addition to saying "deploy" in chat)
+
+## Future: Patterns (One-Click Features)
+
+Pre-built feature templates that users can add to their app with a single button press. Each pattern is a Claude-friendly piece of markdown/code that gets sent to Claude Code and instantly implemented.
+
+Examples:
+- **Infinite scroll** — Backend pagination + filtering + search
+- **Favorites system** — Save/unsave anything
+- **Cart + marketplace** — Full e-commerce flow
+- **RevenueCat integration** — Subscriptions and in-app purchases
+- **Audio system** — Record, play sounds
+- **Video player** — Embedded video playback
+
+The idea: a library of battle-tested patterns. User hits a button, Claude implements it on their app. No prompting required.
+
+## Current State — What's Done
+
+- ✅ All 4 setup wizard steps working
+- ✅ Deploy: GitHub repo creation + SSE progress bar + Vercel import + env vars
+- ✅ Repo name availability check with debounce
+- ✅ Retry logic (GitHub done? skip to Vercel on retry)
+- ✅ All env vars migrated to new Supabase key names across entire codebase
+- ✅ Digital Ocean Spaces fully removed, replaced with Supabase Storage
+- ✅ ESLint + TypeScript + production build all pass
+
+## What's Left
+
+- Git initialization on Fly.io workspace after initial deploy
+- The "push changes" flow (via Claude Code terminal or dedicated UI)
+- Supabase Storage `profile-pictures` bucket creation (could be automated in wizard)
+- End-to-end testing of the full flow on an actual Fly.io machine (vs local dev)
+- Tunneling solution for preview (needs to be cheap at scale)
+- Patterns system (design + first batch of patterns)
+- Repo rename: `claude-code-bridge` → `anubix-bridge`, `switchai` → `anubix-native`
+
+## Philosophy
+
+- Users don't know what git, env vars, or API keys are. Every instruction says exactly what to click and where to find it.
+- Users own their own accounts and infrastructure. Clerk, Supabase, GitHub, Vercel — all theirs. This is a feature, not a bug.
+- Only the newest versions of everything. No deprecated patterns. No backward compatibility.
+- If it can be automated via API, automate it. One click, zero thinking.

@@ -1,5 +1,29 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Runtime data (sessions, message logs)
 data/
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+
+# Logs
 *.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Claude Code local settings (may contain secrets in permission rules)
+.claude/

@@ -1,12 +1,14 @@
 import { spawn, type ChildProcess, execSync } from 'child_process';
-import http from 'http';
+import type http from 'http';
 import net from 'net';
+import type { IncomingMessage } from 'http';
+import type { Duplex } from 'stream';
 import httpProxy from 'http-proxy';
+import type express from 'express';
 
 import { getSession } from './sessions.js';
 import type { PreviewState, PreviewStatusResponse } from './types.js';
 
-const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT || '3457', 10);
 const FALLBACK_PORT = parseInt(process.env.PREVIEW_FALLBACK_PORT || '3000', 10);
 const MAX_LOG_LINES = 200;
 const READY_TIMEOUT_MS = 3000;
@@ -36,7 +38,16 @@ function isPortListening(port: number): Promise<boolean> {
 let state: PreviewState | null = null;
 let proc: ChildProcess | null = null;
 let logs: string[] = [];
-let proxyServer: http.Server | null = null;
+
+// The shared proxy instance — created once, used by both HTTP and WS handlers
+const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true });
+
+proxy.on('error', (_err, _req, res) => {
+  if (res && 'writeHead' in res && typeof res.writeHead === 'function') {
+    (res as http.ServerResponse).writeHead(502, { 'Content-Type': 'text/plain' });
+    (res as http.ServerResponse).end('502 Bad Gateway — dev server not ready');
+  }
+});
 
 function pushLog(line: string) {
   logs.push(line);
@@ -45,54 +56,54 @@ function pushLog(line: string) {
   }
 }
 
-// --- Proxy server ---
+// --- Preview proxy middleware (mounted on /preview in Express) ---
 
-export function startProxyServer(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true });
+/**
+ * Express middleware that proxies all requests under /preview/ to the dev server.
+ * Strips the /preview prefix before forwarding.
+ */
+export function previewProxyMiddleware(): express.RequestHandler {
+  return async (req, res) => {
+    const targetPort = state?.port || FALLBACK_PORT;
 
-    proxy.on('error', (_err, _req, res) => {
-      if (res && 'writeHead' in res && typeof res.writeHead === 'function') {
-        (res as http.ServerResponse).writeHead(502, { 'Content-Type': 'text/plain' });
-        (res as http.ServerResponse).end('502 Bad Gateway — dev server not ready');
-      }
-    });
+    // If a managed dev server is running, use its port
+    if (state && state.status === 'running') {
+      proxy.web(req, res, { target: `http://127.0.0.1:${targetPort}` });
+      return;
+    }
+    if (state && state.status === 'starting') {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('502 Dev server starting…');
+      return;
+    }
+    // No managed dev server — check if something is already listening on the fallback port
+    if (await isPortListening(targetPort)) {
+      proxy.web(req, res, { target: `http://127.0.0.1:${targetPort}` });
+      return;
+    }
+    res.writeHead(503, { 'Content-Type': 'text/plain' });
+    res.end('503 No preview active — nothing listening on port ' + targetPort);
+  };
+}
 
-    proxyServer = http.createServer(async (req, res) => {
-      // If a managed dev server is running, use its port
-      if (state && state.status === 'running') {
-        proxy.web(req, res, { target: `http://127.0.0.1:${state.port}` });
-        return;
-      }
-      if (state && state.status === 'starting') {
-        res.writeHead(502, { 'Content-Type': 'text/plain' });
-        res.end('502 Dev server starting…');
-        return;
-      }
-      // No managed dev server — check if something is already listening on the fallback port
-      const fallbackPort = state?.port || FALLBACK_PORT;
-      if (await isPortListening(fallbackPort)) {
-        proxy.web(req, res, { target: `http://127.0.0.1:${fallbackPort}` });
-        return;
-      }
-      res.writeHead(503, { 'Content-Type': 'text/plain' });
-      res.end('503 No preview active — nothing listening on port ' + fallbackPort);
-    });
+/**
+ * Handle WebSocket upgrades for the /preview/ path.
+ * Called from the main server's 'upgrade' event handler.
+ */
+export function handlePreviewUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+  const targetPort = state?.port || FALLBACK_PORT;
 
-    proxyServer.on('upgrade', (req, socket, head) => {
-      if (!state || state.status !== 'running') {
-        socket.destroy();
-        return;
-      }
-      proxy.ws(req, socket, head, { target: `http://127.0.0.1:${state.port}` });
-    });
-
-    proxyServer.listen(PREVIEW_PORT, () => {
-      console.log(`Preview proxy listening on http://localhost:${PREVIEW_PORT}`);
-      resolve();
-    });
-
-    proxyServer.on('error', reject);
+  if (state && state.status === 'running') {
+    proxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` });
+    return;
+  }
+  // If dev server isn't running, check fallback port
+  isPortListening(targetPort).then((listening) => {
+    if (listening) {
+      proxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` });
+    } else {
+      socket.destroy();
+    }
   });
 }
 
@@ -230,8 +241,5 @@ export function getLogs(tail?: number): string[] {
 
 export function shutdownPreview(): void {
   stopDevServer();
-  if (proxyServer) {
-    proxyServer.close();
-    proxyServer = null;
-  }
+  proxy.close();
 }

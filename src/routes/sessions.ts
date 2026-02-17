@@ -10,6 +10,7 @@ import {
   deleteSession,
   getSession,
   listSessions,
+  updateSession,
 } from '../sessions.js';
 
 const execFileAsync = promisify(execFile);
@@ -151,6 +152,40 @@ router.get('/:id/messages', (req, res) => {
     sessionId: req.params.id,
     count: messages.length,
   });
+});
+
+// Update a session (name, repoPaths)
+router.patch('/:id', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const { name, repoPaths } = req.body as {
+    name?: string;
+    repoPaths?: string[];
+  };
+
+  const updates: Record<string, unknown> = {};
+
+  if (name !== undefined) {
+    updates.name = name;
+  }
+
+  if (repoPaths !== undefined && Array.isArray(repoPaths) && repoPaths.length > 0) {
+    const resolved = repoPaths.map((p) => resolveRepoPath(p));
+    if (resolved.length >= 2) {
+      updates.repoPaths = resolved;
+      updates.repoPath = resolved[0];
+    } else {
+      updates.repoPath = resolved[0];
+      updates.repoPaths = undefined;
+    }
+  }
+
+  const updated = updateSession(req.params.id, updates);
+  res.json({ data: updated });
 });
 
 // Delete a session

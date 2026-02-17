@@ -7,7 +7,7 @@ import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
 
-import { startProxyServer, shutdownPreview } from './preview.js';
+import { previewProxyMiddleware, handlePreviewUpgrade, shutdownPreview } from './preview.js';
 import previewRouter from './routes/preview.js';
 import sessionsRouter from './routes/sessions.js';
 import { handleWebSocket } from './ws/handler.js';
@@ -55,6 +55,9 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/preview', previewRouter);
 
+// --- Preview proxy (no auth — this IS the user's app) ---
+app.use('/preview', previewProxyMiddleware());
+
 // --- HTTP + WebSocket server ---
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -77,6 +80,15 @@ const heartbeatInterval = setInterval(() => {
 // Handle WebSocket upgrade with auth + session routing
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
+
+  // Preview WebSocket upgrades (Next.js HMR, etc.) — no auth needed
+  if (url.pathname.startsWith('/preview')) {
+    // Strip /preview prefix so the dev server sees the original path
+    request.url = url.pathname.slice('/preview'.length) + url.search || '/';
+    handlePreviewUpgrade(request, socket, head);
+    return;
+  }
+
   const pathMatch = url.pathname.match(/^\/ws\/(.+)$/);
 
   if (!pathMatch) {
@@ -111,11 +123,12 @@ server.on('upgrade', (request: IncomingMessage, socket, head) => {
   handleWebSocket(ws, sessionId, lastSeq);
 });
 
-server.listen(PORT, async () => {
+const HOST = process.env.HOST || '0.0.0.0';
+server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws/:sessionId?key=...`);
+  console.log(`Preview proxy: http://localhost:${PORT}/preview/`);
   console.log(`Default Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
-  await startProxyServer();
 });
 
 // --- Graceful shutdown ---

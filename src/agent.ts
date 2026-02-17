@@ -2,7 +2,7 @@ import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type WebSocket from 'ws';
 
 import { BRIDGE_COMMANDS } from './commands.js';
-import { appendMessage } from './messageLog.js';
+import { appendMessage, getAllMessages } from './messageLog.js';
 import { getSession, updateSession } from './sessions.js';
 import type { ClaudeMode, SessionState, WsApprovalRequest, WsAskQuestion, WsServerPayload } from './types.js';
 
@@ -231,6 +231,62 @@ export async function fetchCommands(
 }
 
 /**
+ * Build a conversation history summary from the message log for a session.
+ * Used as a fallback when the SDK session cannot be resumed (e.g. after server
+ * restart and the conversationId is stale).
+ *
+ * Returns a compact text block of prior user messages and assistant responses
+ * that can be prepended to the prompt so Claude has context.
+ */
+function buildHistoryContext(sessionId: string): string {
+  const messages = getAllMessages(sessionId);
+  if (messages.length === 0) return '';
+
+  const parts: string[] = [];
+  let currentAssistantText = '';
+
+  for (const { payload } of messages) {
+    if (payload.type === 'user_message') {
+      // Flush any accumulated assistant text
+      if (currentAssistantText) {
+        parts.push(`[assistant]: ${currentAssistantText.trim()}`);
+        currentAssistantText = '';
+      }
+      if (payload.content) {
+        parts.push(`[user]: ${payload.content}`);
+      }
+    } else if (payload.type === 'text_delta') {
+      if (payload.text) {
+        currentAssistantText += payload.text;
+      }
+    } else if (payload.type === 'result') {
+      // Flush any accumulated assistant text before the result marker
+      if (currentAssistantText) {
+        parts.push(`[assistant]: ${currentAssistantText.trim()}`);
+        currentAssistantText = '';
+      }
+    }
+  }
+
+  // Flush trailing assistant text
+  if (currentAssistantText) {
+    parts.push(`[assistant]: ${currentAssistantText.trim()}`);
+  }
+
+  if (parts.length === 0) return '';
+
+  // Truncate to avoid exceeding context limits — keep last ~50 exchanges
+  const truncated = parts.slice(-100);
+  return (
+    `<conversation-history>\n` +
+    `The following is the prior conversation history for this session. ` +
+    `Use it as context to understand what the user is referring to.\n\n` +
+    `${truncated.join('\n\n')}\n` +
+    `</conversation-history>\n\n`
+  );
+}
+
+/**
  * Run a prompt against a Claude Code session and stream results via WebSocket.
  *
  * Uses @anthropic-ai/claude-agent-sdk query() which returns an AsyncGenerator
@@ -318,6 +374,57 @@ export async function runPrompt(
           'WebFetch',
         ],
         env,
+
+        // Intercept AskUserQuestion tool calls and relay to WebSocket clients.
+        // AskUserQuestion is NOT in allowedTools, so it triggers this callback.
+        // We send the questions to the connected app, wait for the user's answer,
+        // then return 'allow' with the answers injected into updatedInput.
+        canUseTool: async (toolName, input, { signal }) => {
+          if (toolName === 'AskUserQuestion') {
+            const questions = (input.questions as Array<{
+              question: string;
+              options: Array<{ label: string; description?: string }>;
+              multiSelect?: boolean;
+            }>) || [];
+
+            console.log(`[${sessionId.slice(0, 8)}] AskUserQuestion intercepted: ${questions.length} question(s)`);
+
+            // Build the payload and store for reconnect recovery
+            const questionPayload: WsAskQuestion = { type: 'ask_question', questions };
+            storeQuestionPayload(sessionId, questionPayload);
+
+            // Send to the connected WebSocket client
+            sendToSession(sessionId, questionPayload);
+
+            // Wait for the user's answer, racing against abort signal
+            const answers = await new Promise<Record<string, string>>((resolve, reject) => {
+              // Listen for abort
+              const onAbort = () => {
+                // Clean up pending question state
+                pendingQuestions.delete(sessionId);
+                lastQuestionPayloads.delete(sessionId);
+                reject(new Error('Aborted'));
+              };
+              if (signal.aborted) { onAbort(); return; }
+              signal.addEventListener('abort', onAbort, { once: true });
+
+              // Wait for the user answer via resolveQuestion()
+              waitForQuestionAnswer(sessionId).then((ans) => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(ans);
+              });
+            });
+
+            console.log(`[${sessionId.slice(0, 8)}] AskUserQuestion answered:`, JSON.stringify(answers));
+
+            // Return allow with answers injected so the SDK feeds them to Claude
+            return { behavior: 'allow' as const, updatedInput: { ...input, answers } };
+          }
+
+          // All other tools: auto-allow (they're already in allowedTools,
+          // but canUseTool may still fire for edge cases)
+          return { behavior: 'allow' as const };
+        },
       },
     };
 
@@ -326,167 +433,205 @@ export async function runPrompt(
       queryOptions.options!.resume = session.conversationId;
     }
 
-    const conversation = query(queryOptions);
+    // Helper: execute the query and stream results back to the client
+    const executeQuery = async (opts: Parameters<typeof query>[0]) => {
+      const conversation = query(opts);
+      activeQueries.set(sessionId, conversation);
 
-    // Store active query for abort support
-    activeQueries.set(sessionId, conversation);
-
-    for await (const message of conversation) {
-      switch (message.type) {
-        case 'system': {
-          // system.init — capture session_id for resume, relay model info
-          if ('session_id' in message) {
-            updateSession(sessionId, {
-              conversationId: message.session_id,
+      for await (const message of conversation) {
+        switch (message.type) {
+          case 'system': {
+            // system.init — capture session_id for resume, relay model info
+            if ('session_id' in message) {
+              updateSession(sessionId, {
+                conversationId: message.session_id,
+              });
+            }
+            sendToSession(sessionId, {
+              type: 'session_init',
+              sessionId,
+              model:
+                'model' in message
+                  ? (message.model as string)
+                  : undefined,
             });
+            break;
           }
-          sendToSession(sessionId, {
-            type: 'session_init',
-            sessionId,
-            model:
-              'model' in message
-                ? (message.model as string)
-                : undefined,
-          });
-          break;
-        }
 
-        case 'assistant': {
-          // Full assistant message — extract text content blocks
-          const msg = message.message as {
-            content?: Array<{
-              type: string;
-              text?: string;
-              name?: string;
-              input?: Record<string, unknown>;
-              id?: string;
-            }>;
-            usage?: {
-              input_tokens?: number;
-              output_tokens?: number;
-              cache_creation_input_tokens?: number;
-              cache_read_input_tokens?: number;
+          case 'assistant': {
+            // Full assistant message — extract text content blocks
+            const msg = message.message as {
+              content?: Array<{
+                type: string;
+                text?: string;
+                name?: string;
+                input?: Record<string, unknown>;
+                id?: string;
+              }>;
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
             };
-          };
-          if (msg?.content) {
-            for (const block of msg.content) {
-              if (block.type === 'text' && block.text) {
-                fullText += block.text;
-                sendToSession(sessionId, { type: 'text_delta', text: block.text });
-              }
-              if (block.type === 'tool_use' && block.name) {
-                sendToSession(sessionId, {
-                  type: 'tool_start',
-                  toolName: block.name,
-                  toolInput: (block.input as Record<string, unknown>) || {},
-                });
+            if (msg?.content) {
+              for (const block of msg.content) {
+                if (block.type === 'text' && block.text) {
+                  fullText += block.text;
+                  sendToSession(sessionId, { type: 'text_delta', text: block.text });
+                }
+                if (block.type === 'tool_use' && block.name) {
+                  sendToSession(sessionId, {
+                    type: 'tool_start',
+                    toolName: block.name,
+                    toolInput: (block.input as Record<string, unknown>) || {},
+                  });
+                }
               }
             }
+            break;
           }
-          break;
-        }
 
-        case 'result': {
-          // Final result — relay cost, duration, result text, token usage
-          const resultMsg = message as {
-            subtype?: string;
-            result?: string;
-            total_cost_usd?: number;
-            duration_ms?: number;
-            session_id?: string;
-            errors?: string[];
-            usage?: {
-              input_tokens?: number;
-              output_tokens?: number;
-              cache_creation_input_tokens?: number;
-              cache_read_input_tokens?: number;
+          case 'result': {
+            // Final result — relay cost, duration, result text, token usage
+            const resultMsg = message as {
+              subtype?: string;
+              result?: string;
+              total_cost_usd?: number;
+              duration_ms?: number;
+              session_id?: string;
+              errors?: string[];
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
             };
-          };
 
-          if (
-            resultMsg.subtype === 'success' &&
-            resultMsg.result
-          ) {
-            sendToSession(sessionId, {
-              type: 'result',
-              result: resultMsg.result,
-              sessionId,
-              cost: resultMsg.total_cost_usd,
-              free: mode === 'cli' || undefined,
-              duration: resultMsg.duration_ms
-                ? resultMsg.duration_ms / 1000
-                : undefined,
-              inputTokens: resultMsg.usage?.input_tokens,
-              outputTokens: resultMsg.usage?.output_tokens,
-              cacheReads: resultMsg.usage?.cache_read_input_tokens,
-              cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
-            });
-          } else if (resultMsg.errors?.length) {
-            // Detect error subtypes
-            const errorText = resultMsg.errors.join('\n');
-            let subtype: string | undefined;
-            if (/rate.?limit/i.test(errorText)) subtype = 'rate_limit';
-            else if (/billing/i.test(errorText)) subtype = 'billing_error';
-            else if (/auth/i.test(errorText)) subtype = 'auth_error';
-            else if (/overloaded/i.test(errorText)) subtype = 'overloaded';
+            if (
+              resultMsg.subtype === 'success' &&
+              resultMsg.result
+            ) {
+              sendToSession(sessionId, {
+                type: 'result',
+                result: resultMsg.result,
+                sessionId,
+                cost: resultMsg.total_cost_usd,
+                free: mode === 'cli' || undefined,
+                duration: resultMsg.duration_ms
+                  ? resultMsg.duration_ms / 1000
+                  : undefined,
+                inputTokens: resultMsg.usage?.input_tokens,
+                outputTokens: resultMsg.usage?.output_tokens,
+                cacheReads: resultMsg.usage?.cache_read_input_tokens,
+                cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
+              });
+            } else if (resultMsg.errors?.length) {
+              // Detect error subtypes
+              const errorText = resultMsg.errors.join('\n');
+              let subtype: string | undefined;
+              if (/rate.?limit/i.test(errorText)) subtype = 'rate_limit';
+              else if (/billing/i.test(errorText)) subtype = 'billing_error';
+              else if (/auth/i.test(errorText)) subtype = 'auth_error';
+              else if (/overloaded/i.test(errorText)) subtype = 'overloaded';
 
-            sendToSession(sessionId, {
-              type: 'error',
-              message: errorText,
-              subtype,
-            });
-          } else {
-            sendToSession(sessionId, {
-              type: 'result',
-              result: resultMsg.result || '',
-              sessionId,
-              cost: resultMsg.total_cost_usd,
-              free: mode === 'cli' || undefined,
-              duration: resultMsg.duration_ms
-                ? resultMsg.duration_ms / 1000
-                : undefined,
-              inputTokens: resultMsg.usage?.input_tokens,
-              outputTokens: resultMsg.usage?.output_tokens,
-              cacheReads: resultMsg.usage?.cache_read_input_tokens,
-              cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
-            });
-          }
-
-          // After first successful result, try to cache commands
-          if (!sessionCommands.has(sessionId)) {
-            try {
-              console.log(`[${sessionId.slice(0, 8)}] Fetching supportedCommands...`);
-              const cmds = await conversation.supportedCommands();
-              console.log(`[${sessionId.slice(0, 8)}] supportedCommands returned:`, JSON.stringify(cmds)?.slice(0, 200));
-              if (cmds && Array.isArray(cmds)) {
-                const mapped = cmds.map((c: { name?: string; description?: string; argHint?: string }) => ({
-                  name: c.name || '',
-                  description: c.description || '',
-                  argHint: c.argHint,
-                }));
-                console.log(`[${sessionId.slice(0, 8)}] Cached ${mapped.length} SDK commands`);
-                sessionCommands.set(sessionId, mapped);
-                sendToSession(sessionId, { type: 'commands_available', commands: [...BRIDGE_COMMANDS, ...mapped] });
-              }
-            } catch (err) {
-              console.error(`[${sessionId.slice(0, 8)}] supportedCommands failed:`, err);
+              sendToSession(sessionId, {
+                type: 'error',
+                message: errorText,
+                subtype,
+              });
+            } else {
+              sendToSession(sessionId, {
+                type: 'result',
+                result: resultMsg.result || '',
+                sessionId,
+                cost: resultMsg.total_cost_usd,
+                free: mode === 'cli' || undefined,
+                duration: resultMsg.duration_ms
+                  ? resultMsg.duration_ms / 1000
+                  : undefined,
+                inputTokens: resultMsg.usage?.input_tokens,
+                outputTokens: resultMsg.usage?.output_tokens,
+                cacheReads: resultMsg.usage?.cache_read_input_tokens,
+                cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
+              });
             }
-          }
-          break;
-        }
 
-        default: {
-          // Handle tool progress / status messages if possible
-          const anyMsg = message as Record<string, unknown>;
-          if (anyMsg.type === 'tool_progress' && anyMsg.tool_name) {
-            sendToSession(sessionId, {
-              type: 'tool_progress',
-              toolName: anyMsg.tool_name as string,
-              elapsed: (anyMsg.elapsed_ms as number) || 0,
-            });
+            // After first successful result, try to cache commands
+            if (!sessionCommands.has(sessionId)) {
+              try {
+                console.log(`[${sessionId.slice(0, 8)}] Fetching supportedCommands...`);
+                const cmds = await conversation.supportedCommands();
+                console.log(`[${sessionId.slice(0, 8)}] supportedCommands returned:`, JSON.stringify(cmds)?.slice(0, 200));
+                if (cmds && Array.isArray(cmds)) {
+                  const mapped = cmds.map((c: { name?: string; description?: string; argHint?: string }) => ({
+                    name: c.name || '',
+                    description: c.description || '',
+                    argHint: c.argHint,
+                  }));
+                  console.log(`[${sessionId.slice(0, 8)}] Cached ${mapped.length} SDK commands`);
+                  sessionCommands.set(sessionId, mapped);
+                  sendToSession(sessionId, { type: 'commands_available', commands: [...BRIDGE_COMMANDS, ...mapped] });
+                }
+              } catch (err) {
+                console.error(`[${sessionId.slice(0, 8)}] supportedCommands failed:`, err);
+              }
+            }
+            break;
           }
-          break;
+
+          default: {
+            // Handle tool progress / status messages if possible
+            const anyMsg = message as Record<string, unknown>;
+            if (anyMsg.type === 'tool_progress' && anyMsg.tool_name) {
+              sendToSession(sessionId, {
+                type: 'tool_progress',
+                toolName: anyMsg.tool_name as string,
+                elapsed: (anyMsg.elapsed_ms as number) || 0,
+              });
+            }
+            break;
+          }
         }
+      }
+    };
+
+    // Attempt to run the query — if resume fails, retry with history context
+    try {
+      await executeQuery(queryOptions);
+    } catch (resumeErr) {
+      // If this was a resume attempt and it failed, retry without resume
+      // but prepend conversation history so Claude has context
+      if (
+        queryOptions.options?.resume &&
+        !abortedSessions.has(sessionId)
+      ) {
+        const tag = sessionId.slice(0, 8);
+        console.log(
+          `[${tag}] Resume failed (${resumeErr instanceof Error ? resumeErr.message : 'unknown'}), retrying with history context...`,
+        );
+
+        // Clear stale conversationId
+        updateSession(sessionId, { conversationId: undefined });
+
+        // Build history context from message log and prepend to prompt
+        const historyContext = buildHistoryContext(sessionId);
+        const retryPrompt = historyContext + effectivePrompt;
+
+        // Rebuild query options without resume, with history-enriched prompt
+        const retryOptions: Parameters<typeof query>[0] = {
+          ...queryOptions,
+          prompt: retryPrompt,
+          options: { ...queryOptions.options, resume: undefined },
+        };
+        delete retryOptions.options!.resume;
+
+        fullText = '';
+        await executeQuery(retryOptions);
+      } else {
+        throw resumeErr;
       }
     }
   } catch (err) {

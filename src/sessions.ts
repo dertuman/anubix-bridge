@@ -51,8 +51,7 @@ function loadFromDisk() {
       const raw = readFileSync(SESSIONS_FILE, 'utf-8');
       const arr: SessionState[] = JSON.parse(raw);
       for (const s of arr) {
-        // conversationId is ephemeral — strip it on load
-        delete s.conversationId;
+        // Keep conversationId so the SDK can resume after restart
         // Can't be busy after restart
         if (s.status === 'busy') s.status = 'idle';
         // Backfill lastActiveAt for sessions created before this field existed
@@ -74,11 +73,7 @@ function flushToDisk() {
       if (!existsSync(DATA_DIR)) {
         mkdirSync(DATA_DIR, { recursive: true });
       }
-      const arr = Array.from(sessions.values()).map((s) => {
-        // Exclude conversationId from persistence
-        const { conversationId: _, ...rest } = s;
-        return rest;
-      });
+      const arr = Array.from(sessions.values());
       writeFileSync(SESSIONS_FILE, JSON.stringify(arr, null, 2), 'utf-8');
     } catch (err) {
       console.error('Failed to persist sessions:', err);
