@@ -307,6 +307,7 @@ export async function runPrompt(
   updateSession(sessionId, { status: 'busy' });
 
   let fullText = '';
+  let resultSent = false;
 
   try {
     // Build workspace context prefix for multi-folder sessions
@@ -528,6 +529,7 @@ export async function runPrompt(
                 cacheReads: resultMsg.usage?.cache_read_input_tokens,
                 cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
               });
+              resultSent = true;
             } else if (resultMsg.errors?.length) {
               // Detect error subtypes
               const errorText = resultMsg.errors.join('\n');
@@ -542,6 +544,7 @@ export async function runPrompt(
                 message: errorText,
                 subtype,
               });
+              resultSent = true;
             } else {
               sendToSession(sessionId, {
                 type: 'result',
@@ -557,6 +560,7 @@ export async function runPrompt(
                 cacheReads: resultMsg.usage?.cache_read_input_tokens,
                 cacheWrites: resultMsg.usage?.cache_creation_input_tokens,
               });
+              resultSent = true;
             }
 
             // After first successful result, try to cache commands
@@ -651,9 +655,22 @@ export async function runPrompt(
     else if (/overloaded/i.test(errMessage)) subtype = 'overloaded';
 
     sendToSession(sessionId, { type: 'error', message: errMessage, subtype });
+    resultSent = true;
   } finally {
     abortedSessions.delete(sessionId);
     activeQueries.delete(sessionId);
     updateSession(sessionId, { status: 'idle' });
+
+    // Safety net: if the SDK stream ended without emitting a result or error
+    // frame, the client would stay in isBusy=true forever. Send a fallback
+    // result so the client always transitions back to idle.
+    if (!resultSent) {
+      console.log(`[${sessionId.slice(0, 8)}] No result frame was sent — sending fallback result`);
+      sendToSession(sessionId, {
+        type: 'result',
+        result: fullText || '',
+        sessionId,
+      });
+    }
   }
 }

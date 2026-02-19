@@ -131,6 +131,31 @@ server.listen(PORT, HOST, () => {
   console.log(`Default Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
 });
 
+// --- Dedicated preview server (separate port for Cloudflare tunnel) ---
+const PREVIEW_PORT = process.env.PREVIEW_PORT
+  ? parseInt(process.env.PREVIEW_PORT, 10)
+  : null;
+
+let previewServer: ReturnType<typeof createServer> | null = null;
+
+if (PREVIEW_PORT) {
+  const previewApp = express();
+  previewApp.use(cors());
+  // Mount the same proxy middleware at root (no /preview prefix needed)
+  previewApp.use('/', previewProxyMiddleware());
+
+  previewServer = createServer(previewApp);
+
+  // Handle WebSocket upgrades (HMR / hot reload from Next.js, Vite, etc.)
+  previewServer.on('upgrade', (request, socket, head) => {
+    handlePreviewUpgrade(request, socket, head);
+  });
+
+  previewServer.listen(PREVIEW_PORT, HOST, () => {
+    console.log(`Preview server running on http://localhost:${PREVIEW_PORT}`);
+  });
+}
+
 // --- Graceful shutdown ---
 function gracefulShutdown() {
   console.log('\nShutting down…');
