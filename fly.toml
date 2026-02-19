@@ -1,4 +1,4 @@
-app = 'claude-code-bridge'
+app = 'anubix-bridge'
 primary_region = 'lhr'
 
 [build]

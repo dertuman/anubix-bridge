@@ -17,6 +17,16 @@ PROJECT_DIR="${WORKSPACE}/project"
 
 echo "🚀 Initialising workspace..."
 
+# ── Claude CLI auth (subscription mode) ───────────────────────
+# When CLAUDE_AUTH_JSON is set (by cloud provisioning), write it
+# to the expected config path so the CLI uses the user's subscription.
+if [ -n "$CLAUDE_AUTH_JSON" ]; then
+    mkdir -p /root/.config/claude-code
+    echo "$CLAUDE_AUTH_JSON" > /root/.config/claude-code/auth.json
+    chmod 600 /root/.config/claude-code/auth.json
+    echo "✅ Claude CLI credentials injected"
+fi
+
 # --- Template or Git clone (only if project dir doesn't exist yet) ---
 if [ ! -d "$PROJECT_DIR" ] || [ -z "$(ls -A $PROJECT_DIR 2>/dev/null)" ]; then
     mkdir -p "$PROJECT_DIR"
