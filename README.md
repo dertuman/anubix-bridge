@@ -4,12 +4,12 @@ The real-time connection layer between [Anubix](https://github.com/topics/anubix
 
 ## Repositories
 
-| Repo | What it does |
-|------|-------------|
-| **`anubix-bridge`** (this repo) | Express + WebSocket server. Connects clients to Claude Code via the Agent SDK. Each user gets their own machine. |
-| **`anubix-web`** | Browser client. Users connect to the bridge from here to build and manage their apps. |
-| **`anubix-native`** | React Native mobile client (iOS/Android). Same functionality as web. |
-| **`talkartech-fullstack-template-supabase`** | Next.js + Clerk + Supabase starter template. Gets copied onto the Fly.io machine when a user creates an app. |
+| Repo                                         | What it does                                                                                                     |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **`anubix-bridge`** (this repo)              | Express + WebSocket server. Connects clients to Claude Code via the Agent SDK. Each user gets their own machine. |
+| **`anubix-web`**                             | Browser client. Users connect to the bridge from here to build and manage their apps.                            |
+| **`anubix-native`**                          | React Native mobile client (iOS/Android). Same functionality as web.                                             |
+| **`talkartech-fullstack-template-supabase`** | Next.js + Clerk + Supabase starter template. Gets copied onto the Fly.io machine when a user creates an app.     |
 
 ## Architecture
 
@@ -87,6 +87,7 @@ REPOS_BASE_PATH=C:\Users\you\repos   # Base path for your local repositories
 ```
 
 **Claude modes:**
+
 - `sdk` — Uses `ANTHROPIC_API_KEY` to call the Anthropic API directly. You pay per token.
 - `cli` — Uses your Claude Code CLI subscription. No API key needed (it's stripped from the environment).
 
@@ -159,12 +160,12 @@ This gives you a random `https://something.trycloudflare.com` URL. Good for test
 
 #### Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| `HTTP 530` from Cloudflare | `cloudflared` is not running. Start it with `cloudflared tunnel run`. |
-| DNS record already exists | Go to Cloudflare dashboard > DNS > delete the old CNAME, then re-run `cloudflared tunnel route dns`. |
-| `Unable to reach bridge server` in anubix-web | Check that both `npm run dev` AND `cloudflared tunnel run` are running. |
-| WebSocket won't connect | Make sure the bridge URL in anubix-web starts with `https://` (not `http://`). The client converts it to `wss://` automatically. |
+| Problem                                       | Solution                                                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `HTTP 530` from Cloudflare                    | `cloudflared` is not running. Start it with `cloudflared tunnel run`.                                                            |
+| DNS record already exists                     | Go to Cloudflare dashboard > DNS > delete the old CNAME, then re-run `cloudflared tunnel route dns`.                             |
+| `Unable to reach bridge server` in anubix-web | Check that both `npm run dev` AND `cloudflared tunnel run` are running.                                                          |
+| WebSocket won't connect                       | Make sure the bridge URL in anubix-web starts with `https://` (not `http://`). The client converts it to `wss://` automatically. |
 
 ### 5. Connect from anubix-web
 
@@ -240,26 +241,26 @@ curl -H "x-api-key: YOUR_BRIDGE_API_KEY" https://my-bridge-app.fly.dev/api/healt
 
 The `fly.toml` is pre-configured:
 
-| Setting | Value | Why |
-|---------|-------|-----|
-| `internal_port` | 8080 | Fly.io routes public HTTPS to this port |
-| `force_https` | true | All traffic is HTTPS |
-| `auto_stop_machines` | off | Machine stays running (bridge needs to be always-on) |
-| `auto_start_machines` | true | Restarts if it stops |
-| `min_machines_running` | 1 | Always keep one machine up |
-| `vm.size` | shared-cpu-1x | Cheapest option, enough for one user |
-| `vm.memory` | 512mb | Enough for bridge + Claude Code CLI |
+| Setting                | Value         | Why                                                  |
+| ---------------------- | ------------- | ---------------------------------------------------- |
+| `internal_port`        | 8080          | Fly.io routes public HTTPS to this port              |
+| `force_https`          | true          | All traffic is HTTPS                                 |
+| `auto_stop_machines`   | off           | Machine stays running (bridge needs to be always-on) |
+| `auto_start_machines`  | true          | Restarts if it stops                                 |
+| `min_machines_running` | 1             | Always keep one machine up                           |
+| `vm.size`              | shared-cpu-1x | Cheapest option, enough for one user                 |
+| `vm.memory`            | 512mb         | Enough for bridge + Claude Code CLI                  |
 
 ### Workspace initialization
 
 On first boot, `scripts/init-workspace.sh` runs before the bridge server. It supports:
 
-| Env var | What it does |
-|---------|-------------|
-| `GIT_REPO_URL` | Clones a git repo into `/workspace/project` |
-| `TEMPLATE_URL` | Downloads and extracts a `.tar.gz` template |
+| Env var         | What it does                                                    |
+| --------------- | --------------------------------------------------------------- |
+| `GIT_REPO_URL`  | Clones a git repo into `/workspace/project`                     |
+| `TEMPLATE_URL`  | Downloads and extracts a `.tar.gz` template                     |
 | `TEMPLATE_NAME` | Uses a built-in template (`nextjs`, `vite-react`, or `vanilla`) |
-| _(none)_ | Starts with an empty workspace |
+| _(none)_        | Starts with an empty workspace                                  |
 
 Set these as secrets or env vars before first deploy:
 
@@ -327,6 +328,7 @@ ws(s)://host/ws/:sessionId?key=API_KEY&lastSeq=N
 ```
 
 **Client -> Bridge messages:**
+
 - `{ type: 'message', content: '...' }` — Send prompt to Claude
 - `{ type: 'approval', decision: 'allow' | 'deny' }` — Approve/deny tool use
 - `{ type: 'question_answer', answers: {...} }` — Answer Claude's questions
@@ -334,6 +336,7 @@ ws(s)://host/ws/:sessionId?key=API_KEY&lastSeq=N
 - `{ type: 'ping' }` — Keepalive
 
 **Bridge -> Client messages:**
+
 - `session_init` — Session info on connect
 - `session_status` — Current status + pending prompts
 - `text_delta` — Streaming text from Claude
@@ -345,6 +348,7 @@ ws(s)://host/ws/:sessionId?key=API_KEY&lastSeq=N
 - `commands_available` — List of supported slash commands
 
 **Chat commands (type in chat):**
+
 - `/clear` — Reset conversation
 - `/preview start [port] [command]` — Start dev server
 - `/preview stop` — Stop dev server
@@ -388,6 +392,7 @@ anubix-bridge/
 ## Current State
 
 ### Done
+
 - Bridge server with WebSocket + REST API
 - Claude Code SDK integration with streaming
 - Tool approval and question flows
@@ -399,9 +404,15 @@ anubix-bridge/
 - Two Claude modes (sdk / cli)
 
 ### In Progress
+
 - Automated Fly.io machine provisioning per user (from anubix-web)
 - Git push flow (edit on Fly.io -> push to GitHub -> Vercel auto-deploys)
 
 ### Not Yet Started
+
 - Patterns system (one-click feature templates)
 - Supabase Storage bucket auto-creation in setup wizard
+
+### To delete nul file
+
+del \\?\C:\Users\alex9\Documents\GitHub\anubix-bridge\nul
