@@ -42,10 +42,10 @@ function authMiddleware(
   next();
 }
 
-app.use('/api', authMiddleware);
+app.use('/_bridge', authMiddleware);
 
-// --- REST routes ---
-app.get('/api/health', (_req, res) => {
+// --- REST routes (all under /_bridge to avoid clashing with the preview app) ---
+app.get('/_bridge/health', (_req, res) => {
   res.json({
     status: 'ok',
     version: '1.0.0',
@@ -53,11 +53,11 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.use('/api/sessions', sessionsRouter);
-app.use('/api/preview', previewRouter);
+app.use('/_bridge/sessions', sessionsRouter);
+app.use('/_bridge/preview', previewRouter);
 
-// --- Preview proxy (no auth — this IS the user's app) ---
-app.use('/preview', previewProxyMiddleware());
+// --- Preview proxy (catch-all — everything not matched above goes to dev server) ---
+app.use(previewProxyMiddleware());
 
 // --- HTTP + WebSocket server ---
 const server = createServer(app);
@@ -78,43 +78,37 @@ const heartbeatInterval = setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL_MS);
 
-// Handle WebSocket upgrade with auth + session routing
+// Handle WebSocket upgrade: /ws/* → bridge sessions, everything else → preview HMR
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
 
-  // Preview WebSocket upgrades (Next.js HMR, etc.) — no auth needed
-  if (url.pathname.startsWith('/preview')) {
-    // Strip /preview prefix so the dev server sees the original path
-    request.url = url.pathname.slice('/preview'.length) + url.search || '/';
-    handlePreviewUpgrade(request, socket, head);
-    return;
-  }
-
+  // Bridge WebSocket at /ws/:sessionId
   const pathMatch = url.pathname.match(/^\/ws\/(.+)$/);
 
-  if (!pathMatch) {
-    socket.destroy();
+  if (pathMatch) {
+    // Auth check
+    const key =
+      url.searchParams.get('key') ||
+      request.headers['x-api-key'];
+
+    if (key !== BRIDGE_API_KEY) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const sessionId = pathMatch[1];
+    const lastSeqParam = url.searchParams.get('lastSeq');
+    const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request, sessionId, lastSeq);
+    });
     return;
   }
 
-  // Auth check
-  const key =
-    url.searchParams.get('key') ||
-    request.headers['x-api-key'];
-
-  if (key !== BRIDGE_API_KEY) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-
-  const sessionId = pathMatch[1];
-  const lastSeqParam = url.searchParams.get('lastSeq');
-  const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
-
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request, sessionId, lastSeq);
-  });
+  // Everything else → preview WebSocket (Next.js HMR, Vite HMR, etc.)
+  handlePreviewUpgrade(request, socket, head);
 });
 
 // The 'connection' event is emitted with custom args from handleUpgrade + emit
@@ -127,8 +121,9 @@ server.on('upgrade', (request: IncomingMessage, socket, head) => {
 const HOST = process.env.HOST || '0.0.0.0';
 server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
+  console.log(`Bridge API: http://localhost:${PORT}/_bridge/`);
   console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws/:sessionId?key=...`);
-  console.log(`Preview proxy: http://localhost:${PORT}/preview/`);
+  console.log(`Preview: http://localhost:${PORT}/ (proxied to dev server)`);
   console.log(`Default Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
 });
 

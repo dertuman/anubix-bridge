@@ -73,7 +73,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["sh", "-c", "curl -f http://localhost:8080/api/health -H \"x-api-key: $BRIDGE_API_KEY\" || exit 1"]
+    CMD ["sh", "-c", "curl -f http://localhost:8080/_bridge/health -H \"x-api-key: $BRIDGE_API_KEY\" || exit 1"]
 
 # Start via init script (handles template setup + bridge server)
 CMD ["/app/scripts/init-workspace.sh"]
