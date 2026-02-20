@@ -91,6 +91,12 @@ else
     echo "✅ Existing project found at $PROJECT_DIR"
 fi
 
+# --- Copy .env.dummy to .env.local if no .env.local exists ---
+if [ -f "$PROJECT_DIR/.env.dummy" ] && [ ! -f "$PROJECT_DIR/.env.local" ]; then
+    cp "$PROJECT_DIR/.env.dummy" "$PROJECT_DIR/.env.local"
+    echo "📋 Copied .env.dummy → .env.local"
+fi
+
 # --- Install dependencies if needed ---
 if [ -f "$PROJECT_DIR/package.json" ] && [ ! -d "$PROJECT_DIR/node_modules" ]; then
     echo "📥 Installing dependencies..."

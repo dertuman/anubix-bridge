@@ -13,6 +13,7 @@ import sessionsRouter from './routes/sessions.js';
 import { handleWebSocket } from './ws/handler.js';
 
 const PORT = parseInt(process.env.PORT || '3456', 10);
+delete process.env.PORT; // Prevent child processes (e.g. npm run dev) from inheriting this
 const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY;
 
 if (!BRIDGE_API_KEY) {
