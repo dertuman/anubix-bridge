@@ -7,7 +7,7 @@ import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
 
-import { previewProxyMiddleware, handlePreviewUpgrade, shutdownPreview } from './preview.js';
+import { shutdownPreview } from './preview.js';
 import previewRouter from './routes/preview.js';
 import sessionsRouter from './routes/sessions.js';
 import { handleWebSocket } from './ws/handler.js';
@@ -56,8 +56,10 @@ app.get('/_bridge/health', (_req, res) => {
 app.use('/_bridge/sessions', sessionsRouter);
 app.use('/_bridge/preview', previewRouter);
 
-// --- Preview proxy (catch-all — everything not matched above goes to dev server) ---
-app.use(previewProxyMiddleware());
+// Root — simple info (preview is served directly on port 3000, not proxied)
+app.get('/', (_req, res) => {
+  res.json({ service: 'anubix-bridge', status: 'ok' });
+});
 
 // --- HTTP + WebSocket server ---
 const server = createServer(app);
@@ -78,37 +80,34 @@ const heartbeatInterval = setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL_MS);
 
-// Handle WebSocket upgrade: /ws/* → bridge sessions, everything else → preview HMR
+// Handle WebSocket upgrade — bridge sessions only
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
-
-  // Bridge WebSocket at /ws/:sessionId
   const pathMatch = url.pathname.match(/^\/ws\/(.+)$/);
 
-  if (pathMatch) {
-    // Auth check
-    const key =
-      url.searchParams.get('key') ||
-      request.headers['x-api-key'];
-
-    if (key !== BRIDGE_API_KEY) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    const sessionId = pathMatch[1];
-    const lastSeqParam = url.searchParams.get('lastSeq');
-    const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
-
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request, sessionId, lastSeq);
-    });
+  if (!pathMatch) {
+    socket.destroy();
     return;
   }
 
-  // Everything else → preview WebSocket (Next.js HMR, Vite HMR, etc.)
-  handlePreviewUpgrade(request, socket, head);
+  // Auth check
+  const key =
+    url.searchParams.get('key') ||
+    request.headers['x-api-key'];
+
+  if (key !== BRIDGE_API_KEY) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const sessionId = pathMatch[1];
+  const lastSeqParam = url.searchParams.get('lastSeq');
+  const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request, sessionId, lastSeq);
+  });
 });
 
 // The 'connection' event is emitted with custom args from handleUpgrade + emit
@@ -122,35 +121,10 @@ const HOST = process.env.HOST || '0.0.0.0';
 server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`Bridge API: http://localhost:${PORT}/_bridge/`);
-  console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws/:sessionId?key=...`);
-  console.log(`Preview: http://localhost:${PORT}/ (proxied to dev server)`);
-  console.log(`Default Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
+  console.log(`WebSocket: ws://localhost:${PORT}/ws/:sessionId?key=...`);
+  console.log(`Dev server preview: port 3000 (direct, no proxy)`);
+  console.log(`Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
 });
-
-// --- Dedicated preview server (separate port for Cloudflare tunnel) ---
-const PREVIEW_PORT = process.env.PREVIEW_PORT
-  ? parseInt(process.env.PREVIEW_PORT, 10)
-  : null;
-
-let previewServer: ReturnType<typeof createServer> | null = null;
-
-if (PREVIEW_PORT) {
-  const previewApp = express();
-  previewApp.use(cors());
-  // Mount the same proxy middleware at root (no /preview prefix needed)
-  previewApp.use('/', previewProxyMiddleware());
-
-  previewServer = createServer(previewApp);
-
-  // Handle WebSocket upgrades (HMR / hot reload from Next.js, Vite, etc.)
-  previewServer.on('upgrade', (request, socket, head) => {
-    handlePreviewUpgrade(request, socket, head);
-  });
-
-  previewServer.listen(PREVIEW_PORT, HOST, () => {
-    console.log(`Preview server running on http://localhost:${PREVIEW_PORT}`);
-  });
-}
 
 // --- Graceful shutdown ---
 function gracefulShutdown() {
