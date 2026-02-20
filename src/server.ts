@@ -9,6 +9,7 @@ import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
 
 import { shutdownPreview } from './preview.js';
+import envRouter from './routes/env.js';
 import previewRouter from './routes/preview.js';
 import sessionsRouter from './routes/sessions.js';
 import { handleWebSocket } from './ws/handler.js';
@@ -57,6 +58,7 @@ app.get('/_bridge/health', (_req, res) => {
 
 app.use('/_bridge/sessions', sessionsRouter);
 app.use('/_bridge/preview', previewRouter);
+app.use('/_bridge/env', envRouter);
 
 // --- Reverse proxy: forward everything else to the dev server on port 3000 ---
 // This lets the user's app (Next.js, Vite, etc.) be accessible at the same URL

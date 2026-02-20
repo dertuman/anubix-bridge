@@ -26,6 +26,12 @@ if [ -n "$CLAUDE_AUTH_JSON" ]; then
     echo "✅ Claude CLI credentials injected"
 fi
 
+# ── GitHub token for private repo cloning ────────────────────
+if [ -n "$GITHUB_TOKEN" ]; then
+    git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+    echo "✅ GitHub token configured for private repo access"
+fi
+
 # --- Project setup (only if project dir doesn't exist yet) ---
 if [ ! -d "$PROJECT_DIR" ] || [ -z "$(ls -A $PROJECT_DIR 2>/dev/null)" ]; then
     mkdir -p "$PROJECT_DIR"
@@ -100,6 +106,13 @@ fi
 if [ -f "$PROJECT_DIR/.env.dummy" ] && [ ! -f "$PROJECT_DIR/.env.local" ]; then
     cp "$PROJECT_DIR/.env.dummy" "$PROJECT_DIR/.env.local"
     echo "📋 Copied .env.dummy → .env.local"
+fi
+
+# --- Inject user environment variables into .env.local ---
+if [ -n "$PROJECT_ENV_VARS_JSON" ]; then
+    touch "$PROJECT_DIR/.env.local"
+    echo "$PROJECT_ENV_VARS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$PROJECT_DIR/.env.local"
+    echo "✅ Injected user environment variables"
 fi
 
 # --- Install dependencies if needed ---
