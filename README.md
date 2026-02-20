@@ -88,7 +88,7 @@ REPOS_BASE_PATH=C:\Users\you\repos   # Base path for your local repositories
 
 **Claude modes:**
 
-- `sdk` — Uses `ANTHROPIC_API_KEY` to call the Anthropic API directly. You pay per token.
+- `sdk` — Uses `ANTHROPIC_API_KEY` to call the Anthropic API directly. You pay per token
 - `cli` — Uses your Claude Code CLI subscription. No API key needed (it's stripped from the environment).
 
 ### 3. Start the bridge
