@@ -6,25 +6,47 @@ const router = Router();
 
 const WORKSPACE = process.env.REPOS_BASE_PATH || '/workspace';
 const PROJECT_DIR = path.join(WORKSPACE, 'project');
-const ENV_FILE = path.join(PROJECT_DIR, '.env.local');
 
 /**
  * POST /_bridge/env
- * Receives { vars: Record<string, string> } and merges into .env.local
+ * Receives { vars: Record<string, string>, repoPath?: string }
+ * and merges into .env.local in the target directory.
+ *
+ * If repoPath is provided, writes to <WORKSPACE>/<repoPath>/.env.local
+ * Otherwise falls back to <WORKSPACE>/project/.env.local
  */
 router.post('/', (req, res) => {
-  const { vars } = req.body as { vars: Record<string, string> };
+  const { vars, repoPath } = req.body as {
+    vars: Record<string, string>;
+    repoPath?: string;
+  };
 
   if (!vars || typeof vars !== 'object') {
     res.status(400).json({ error: 'vars must be an object' });
     return;
   }
 
+  // Resolve target directory
+  let targetDir: string;
+  if (repoPath) {
+    const resolved = path.resolve(WORKSPACE, repoPath);
+    // Path traversal guard: ensure resolved path stays within WORKSPACE
+    if (!resolved.startsWith(WORKSPACE)) {
+      res.status(400).json({ error: 'Invalid repo path' });
+      return;
+    }
+    targetDir = resolved;
+  } else {
+    targetDir = PROJECT_DIR;
+  }
+
+  const envFile = path.join(targetDir, '.env.local');
+
   try {
     // Read existing .env.local if it exists
     const existing: Record<string, string> = {};
-    if (fs.existsSync(ENV_FILE)) {
-      const content = fs.readFileSync(ENV_FILE, 'utf-8');
+    if (fs.existsSync(envFile)) {
+      const content = fs.readFileSync(envFile, 'utf-8');
       for (const line of content.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
@@ -39,8 +61,8 @@ router.post('/', (req, res) => {
 
     // Write back
     const lines = Object.entries(existing).map(([k, v]) => `${k}=${v}`);
-    fs.mkdirSync(path.dirname(ENV_FILE), { recursive: true });
-    fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n');
+    fs.mkdirSync(path.dirname(envFile), { recursive: true });
+    fs.writeFileSync(envFile, lines.join('\n') + '\n');
 
     res.json({ ok: true, count: Object.keys(vars).length });
   } catch (err) {
