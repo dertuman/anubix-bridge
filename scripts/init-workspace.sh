@@ -108,6 +108,14 @@ fi
 echo "✅ Workspace ready!"
 echo ""
 
+# --- Auto-start dev server if project has a "dev" script ---
+if [ -f "$PROJECT_DIR/package.json" ] && grep -q '"dev"' "$PROJECT_DIR/package.json"; then
+    echo "🖥️  Starting dev server on port 3000..."
+    cd "$PROJECT_DIR"
+    PORT=3000 npm run dev > /tmp/devserver.log 2>&1 &
+    cd /app
+fi
+
 # --- Start the bridge server ---
 echo "🌉 Starting Claude Code Bridge..."
 exec node /app/dist/server.js
