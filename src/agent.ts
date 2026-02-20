@@ -375,6 +375,10 @@ export async function runPrompt(
           'WebFetch',
         ],
         env,
+        // Enable token-level streaming — without this, the SDK only emits
+        // complete assistant messages, so the user sees nothing until the
+        // entire response is generated.
+        includePartialMessages: true,
 
         // Intercept AskUserQuestion tool calls and relay to WebSocket clients.
         // AskUserQuestion is NOT in allowedTools, so it triggers this callback.
@@ -459,8 +463,30 @@ export async function runPrompt(
             break;
           }
 
+          case 'stream_event': {
+            // Token-level streaming — emitted when includePartialMessages is true.
+            // Contains BetaRawMessageStreamEvent from the Anthropic SDK.
+            const streamMsg = message as { event: {
+              type: string;
+              delta?: { type: string; text?: string };
+              content_block?: { type: string; name?: string; id?: string };
+              index?: number;
+            } };
+            const event = streamMsg.event;
+
+            if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+              const text = event.delta.text;
+              if (text) {
+                fullText += text;
+                sendToSession(sessionId, { type: 'text_delta', text });
+              }
+            }
+            break;
+          }
+
           case 'assistant': {
-            // Full assistant message — extract text content blocks
+            // Full assistant message — only extract tool_use blocks here.
+            // Text is already streamed via stream_event above.
             const msg = message.message as {
               content?: Array<{
                 type: string;
@@ -469,19 +495,9 @@ export async function runPrompt(
                 input?: Record<string, unknown>;
                 id?: string;
               }>;
-              usage?: {
-                input_tokens?: number;
-                output_tokens?: number;
-                cache_creation_input_tokens?: number;
-                cache_read_input_tokens?: number;
-              };
             };
             if (msg?.content) {
               for (const block of msg.content) {
-                if (block.type === 'text' && block.text) {
-                  fullText += block.text;
-                  sendToSession(sessionId, { type: 'text_delta', text: block.text });
-                }
                 if (block.type === 'tool_use' && block.name) {
                   sendToSession(sessionId, {
                     type: 'tool_start',

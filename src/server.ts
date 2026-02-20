@@ -3,6 +3,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import { createServer } from 'http';
+import httpProxy from 'http-proxy';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
@@ -15,6 +16,7 @@ import { handleWebSocket } from './ws/handler.js';
 const PORT = parseInt(process.env.PORT || '3456', 10);
 delete process.env.PORT; // Prevent child processes (e.g. npm run dev) from inheriting this
 const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY;
+const DEV_SERVER_PORT = parseInt(process.env.PREVIEW_FALLBACK_PORT || '3000', 10);
 
 if (!BRIDGE_API_KEY) {
   console.error('BRIDGE_API_KEY is required. Set it in your .env file.');
@@ -56,9 +58,22 @@ app.get('/_bridge/health', (_req, res) => {
 app.use('/_bridge/sessions', sessionsRouter);
 app.use('/_bridge/preview', previewRouter);
 
-// Root — simple info (preview is served directly on port 3000, not proxied)
-app.get('/', (_req, res) => {
-  res.json({ service: 'anubix-bridge', status: 'ok' });
+// --- Reverse proxy: forward everything else to the dev server on port 3000 ---
+// This lets the user's app (Next.js, Vite, etc.) be accessible at the same URL
+// as the bridge, without the broken /preview/ subpath approach. Since all bridge
+// routes use /_bridge/ prefix, there's no conflict with the user's app routes.
+const devProxy = httpProxy.createProxyServer({ ws: true, xfwd: true });
+
+devProxy.on('error', (_err, _req, res) => {
+  if (res && 'writeHead' in res && typeof res.writeHead === 'function') {
+    (res as import('http').ServerResponse).writeHead(502, { 'Content-Type': 'text/plain' });
+    (res as import('http').ServerResponse).end('Dev server not running yet — waiting for port ' + DEV_SERVER_PORT);
+  }
+});
+
+// Catch-all: proxy all non-bridge requests to the dev server
+app.use((req, res) => {
+  devProxy.web(req, res, { target: `http://127.0.0.1:${DEV_SERVER_PORT}` });
 });
 
 // --- HTTP + WebSocket server ---
@@ -80,13 +95,14 @@ const heartbeatInterval = setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL_MS);
 
-// Handle WebSocket upgrade — bridge sessions only
+// Handle WebSocket upgrade — bridge sessions go to WSS, everything else proxied to dev server
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
   const pathMatch = url.pathname.match(/^\/ws\/(.+)$/);
 
   if (!pathMatch) {
-    socket.destroy();
+    // Not a bridge WebSocket — proxy to dev server (HMR, hot reload, etc.)
+    devProxy.ws(request, socket, head, { target: `http://127.0.0.1:${DEV_SERVER_PORT}` });
     return;
   }
 
@@ -122,7 +138,7 @@ server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`Bridge API: http://localhost:${PORT}/_bridge/`);
   console.log(`WebSocket: ws://localhost:${PORT}/ws/:sessionId?key=...`);
-  console.log(`Dev server preview: port 3000 (direct, no proxy)`);
+  console.log(`Dev server preview: proxied from port ${DEV_SERVER_PORT}`);
   console.log(`Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
 });
 
@@ -131,6 +147,7 @@ function gracefulShutdown() {
   console.log('\nShutting down…');
   clearInterval(heartbeatInterval);
   shutdownPreview();
+  devProxy.close();
   wss.close();
   server.close(() => {
     process.exit(0);
