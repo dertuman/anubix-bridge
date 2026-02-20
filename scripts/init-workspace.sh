@@ -20,6 +20,11 @@ echo "🚀 Initialising workspace..."
 
 # ── Claude CLI auth (subscription mode) ───────────────────────
 if [ -n "$CLAUDE_AUTH_JSON" ]; then
+    # New location (Claude Code 1.x+)
+    mkdir -p /root/.claude
+    echo "$CLAUDE_AUTH_JSON" > /root/.claude/.credentials.json
+    chmod 600 /root/.claude/.credentials.json
+    # Legacy location (older CLI versions)
     mkdir -p /root/.config/claude-code
     echo "$CLAUDE_AUTH_JSON" > /root/.config/claude-code/auth.json
     chmod 600 /root/.config/claude-code/auth.json
