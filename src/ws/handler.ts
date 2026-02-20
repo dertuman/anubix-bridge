@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
+import { abortPrompt, closeConversation, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
@@ -114,6 +114,7 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
 
         // Intercept /clear command
         if (payload.content.trim() === '/clear') {
+          closeConversation(sessionId); // Kill persistent subprocess
           clearSessionLog(sessionId);
           updateSession(sessionId, { conversationId: undefined, status: 'idle' });
           send(ws, { type: 'session_cleared', sessionId });
