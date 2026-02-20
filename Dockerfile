@@ -71,7 +71,9 @@ ENV PORT=8080
 ENV PREVIEW_FALLBACK_PORT=3000
 ENV REPOS_BASE_PATH=/workspace
 ENV CLAUDE_MODE=sdk
-ENV NODE_ENV=production
+# NOTE: Do NOT set NODE_ENV=production here — the user's dev server
+# (npm run dev) needs NODE_ENV=development to avoid Edge Runtime eval
+# restrictions. The bridge server works fine without it.
 
 # Expose bridge + dev server
 EXPOSE 8080 3000
