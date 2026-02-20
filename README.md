@@ -391,7 +391,7 @@ anubix-bridge/
 
 ## Current State
 
-### Done
+### Done!
 
 - Bridge server with WebSocket + REST API
 - Claude Code SDK integration with streaming
