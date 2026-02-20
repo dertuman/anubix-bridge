@@ -56,20 +56,25 @@ RUN mkdir -p /app/data/messages
 # Create workspace directory for user projects
 RUN mkdir -p /workspace
 
+# --- Pre-build default template (avoids 3-5 min clone + npm install at runtime) ---
+RUN git clone https://github.com/dertuman/talkartech-fullstack-template-supabase.git /opt/templates/talkartech \
+    && cd /opt/templates/talkartech \
+    && npm install \
+    && rm -rf .git
+
 # Copy startup script and fix line endings (Windows → Linux)
 COPY scripts/init-workspace.sh /app/scripts/init-workspace.sh
 RUN sed -i 's/\r$//' /app/scripts/init-workspace.sh && chmod +x /app/scripts/init-workspace.sh
 
 # --- Environment defaults ---
-# These can all be overridden at deploy time via fly secrets or env vars
 ENV PORT=8080
 ENV PREVIEW_FALLBACK_PORT=3000
 ENV REPOS_BASE_PATH=/workspace
 ENV CLAUDE_MODE=sdk
 ENV NODE_ENV=production
 
-# Expose bridge server (preview is served on the same port at /preview/)
-EXPOSE 8080
+# Expose bridge + dev server
+EXPOSE 8080 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

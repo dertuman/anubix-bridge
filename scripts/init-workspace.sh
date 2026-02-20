@@ -1,25 +1,24 @@
 #!/bin/bash
 # ============================================================
-# init-workspace.sh — Initialise /workspace on first boot
+# init-workspace.sh — Initialise /workspace on boot
 # ============================================================
-# This runs before the bridge server starts. It:
-#   1. Ensures /workspace exists
-#   2. If a TEMPLATE_URL is set, downloads & extracts the template
-#   3. If a GIT_REPO_URL is set, clones it instead
-#   4. Installs project dependencies if package.json exists
-#   5. Starts the bridge server
+# 1. Inject Claude CLI credentials if provided
+# 2. Set up project (pre-built template copy > git clone > template scaffold)
+# 3. Copy .env.dummy → .env.local if needed
+# 4. Install deps if needed
+# 5. Auto-start dev server
+# 6. Start the bridge server
 # ============================================================
 
 set -e
 
 WORKSPACE="/workspace"
 PROJECT_DIR="${WORKSPACE}/project"
+TALKARTECH_URL="https://github.com/dertuman/talkartech-fullstack-template-supabase.git"
 
 echo "🚀 Initialising workspace..."
 
 # ── Claude CLI auth (subscription mode) ───────────────────────
-# When CLAUDE_AUTH_JSON is set (by cloud provisioning), write it
-# to the expected config path so the CLI uses the user's subscription.
 if [ -n "$CLAUDE_AUTH_JSON" ]; then
     mkdir -p /root/.config/claude-code
     echo "$CLAUDE_AUTH_JSON" > /root/.config/claude-code/auth.json
@@ -27,13 +26,19 @@ if [ -n "$CLAUDE_AUTH_JSON" ]; then
     echo "✅ Claude CLI credentials injected"
 fi
 
-# --- Template or Git clone (only if project dir doesn't exist yet) ---
+# --- Project setup (only if project dir doesn't exist yet) ---
 if [ ! -d "$PROJECT_DIR" ] || [ -z "$(ls -A $PROJECT_DIR 2>/dev/null)" ]; then
     mkdir -p "$PROJECT_DIR"
 
     if [ -n "$GIT_REPO_URL" ]; then
-        echo "📦 Cloning from $GIT_REPO_URL..."
-        git clone "$GIT_REPO_URL" "$PROJECT_DIR"
+        # Check for pre-built template (instant copy vs slow clone + npm install)
+        if [ "$GIT_REPO_URL" = "$TALKARTECH_URL" ] && [ -d "/opt/templates/talkartech" ]; then
+            echo "⚡ Using pre-built talkartech template..."
+            cp -a /opt/templates/talkartech/. "$PROJECT_DIR/"
+        else
+            echo "📦 Cloning from $GIT_REPO_URL..."
+            git clone "$GIT_REPO_URL" "$PROJECT_DIR"
+        fi
 
     elif [ -n "$TEMPLATE_URL" ]; then
         echo "📦 Downloading template from $TEMPLATE_URL..."
