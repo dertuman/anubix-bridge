@@ -11,9 +11,14 @@ import type WebSocket from 'ws';
 import { shutdownPreview } from './preview.js';
 import credentialsRouter from './routes/credentials.js';
 import envRouter from './routes/env.js';
+import execRouter from './routes/exec.js';
+import logsRouter, { installLogCapture } from './routes/logs.js';
 import previewRouter from './routes/preview.js';
 import reposRouter from './routes/repos.js';
 import sessionsRouter from './routes/sessions.js';
+
+// Install log capture as early as possible so all logs are buffered
+installLogCapture();
 import { handleWebSocket } from './ws/handler.js';
 
 const PORT = parseInt(process.env.PORT || '3456', 10);
@@ -62,6 +67,8 @@ app.use('/_bridge/sessions', sessionsRouter);
 app.use('/_bridge/preview', previewRouter);
 app.use('/_bridge/env', envRouter);
 app.use('/_bridge/credentials', credentialsRouter);
+app.use('/_bridge/exec', execRouter);
+app.use('/_bridge/logs', logsRouter);
 app.use('/_bridge/repos', reposRouter);
 
 // --- Reverse proxy: forward everything else to the dev server on port 3000 ---
