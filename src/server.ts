@@ -9,6 +9,7 @@ import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
 
 import { shutdownPreview } from './preview.js';
+import credentialsRouter from './routes/credentials.js';
 import envRouter from './routes/env.js';
 import previewRouter from './routes/preview.js';
 import reposRouter from './routes/repos.js';
@@ -60,6 +61,7 @@ app.get('/_bridge/health', (_req, res) => {
 app.use('/_bridge/sessions', sessionsRouter);
 app.use('/_bridge/preview', previewRouter);
 app.use('/_bridge/env', envRouter);
+app.use('/_bridge/credentials', credentialsRouter);
 app.use('/_bridge/repos', reposRouter);
 
 // --- Reverse proxy: forward everything else to the dev server on port 3000 ---

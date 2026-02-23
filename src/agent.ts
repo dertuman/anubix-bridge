@@ -263,6 +263,22 @@ export function closeConversation(sessionId: string) {
   }
 }
 
+/**
+ * Close ALL persistent conversations (e.g. after credential update).
+ * Returns the number of conversations closed.
+ */
+export function closeAllConversations(): number {
+  let count = 0;
+  for (const [sessionId, live] of liveConversations) {
+    live.queue.close();
+    live.conversation.close();
+    activeQueries.delete(sessionId);
+    count++;
+  }
+  liveConversations.clear();
+  return count;
+}
+
 // ── History context (fallback for stale resume) ─────────────
 
 function buildHistoryContext(sessionId: string): string {
@@ -366,6 +382,7 @@ async function processConversationLoop(
 ) {
   const tag = sessionId.slice(0, 8);
   let fullText = '';
+  let sentResultOrError = false;
 
   try {
     for await (const message of conversation) {
@@ -451,6 +468,8 @@ async function processConversationLoop(
               cache_read_input_tokens?: number;
             };
           };
+
+          sentResultOrError = true;
 
           if (resultMsg.subtype === 'success' && resultMsg.result) {
             sendToSession(sessionId, {
@@ -543,9 +562,24 @@ async function processConversationLoop(
     else if (/auth/i.test(errMessage)) subtype = 'auth_error';
     else if (/overloaded/i.test(errMessage)) subtype = 'overloaded';
 
+    sentResultOrError = true;
     sendToSession(sessionId, { type: 'error', message: errMessage, subtype });
   } finally {
-    console.log(`[${tag}] Conversation loop ended`);
+    console.log(`[${tag}] Conversation loop ended (sentResult=${sentResultOrError})`);
+
+    // Safety net: if the subprocess exited without producing any result or error
+    // (e.g., auth failure causing silent exit or interactive login hang), notify the client
+    if (!sentResultOrError && !abortedSessions.has(sessionId)) {
+      const hint = mode === 'cli'
+        ? 'Claude credentials may be invalid or expired. Try re-authenticating in Profile > Integrations, then push credentials to your machine.'
+        : 'Anthropic API key may be invalid. Check your API key in Profile > Integrations.';
+      sendToSession(sessionId, {
+        type: 'error',
+        message: `Claude Code subprocess exited without responding. ${hint}`,
+        subtype: 'auth_error',
+      });
+    }
+
     liveConversations.delete(sessionId);
     activeQueries.delete(sessionId);
     abortedSessions.delete(sessionId);
