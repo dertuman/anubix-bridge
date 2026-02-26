@@ -717,6 +717,7 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
+      ...(session.model ? { model: session.model } : {}),
     },
   };
 

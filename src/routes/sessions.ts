@@ -51,11 +51,12 @@ router.get('/repos', (_req, res) => {
 
 // Create a new session
 router.post('/', (req, res) => {
-  const { repoPath: rawPath, repoPaths: rawRepoPaths, name, mode } = req.body as {
+  const { repoPath: rawPath, repoPaths: rawRepoPaths, name, mode, model } = req.body as {
     repoPath?: string;
     repoPaths?: string[];
     name?: string;
     mode?: string;
+    model?: string;
   };
 
   // Validate mode if provided
@@ -72,7 +73,7 @@ router.post('/', (req, res) => {
       res.status(400).json({ error: `Paths do not exist: ${missing.join(', ')}` });
       return;
     }
-    const session = createSession(resolved[0], name, mode as 'sdk' | 'cli' | undefined, resolved);
+    const session = createSession(resolved[0], name, mode as 'sdk' | 'cli' | undefined, resolved, model);
     res.status(201).json({ data: session });
     return;
   }
@@ -91,7 +92,7 @@ router.post('/', (req, res) => {
     return;
   }
 
-  const session = createSession(repoPath, name, mode as 'sdk' | 'cli' | undefined);
+  const session = createSession(repoPath, name, mode as 'sdk' | 'cli' | undefined, undefined, model);
   res.status(201).json({ data: session });
 });
 
@@ -154,7 +155,7 @@ router.get('/:id/messages', (req, res) => {
   });
 });
 
-// Update a session (name, repoPaths)
+// Update a session (name, repoPaths, model)
 router.patch('/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
@@ -162,15 +163,20 @@ router.patch('/:id', (req, res) => {
     return;
   }
 
-  const { name, repoPaths } = req.body as {
+  const { name, repoPaths, model } = req.body as {
     name?: string;
     repoPaths?: string[];
+    model?: string;
   };
 
   const updates: Record<string, unknown> = {};
 
   if (name !== undefined) {
     updates.name = name;
+  }
+
+  if (model !== undefined) {
+    updates.model = model;
   }
 
   if (repoPaths !== undefined && Array.isArray(repoPaths) && repoPaths.length > 0) {

@@ -9,6 +9,7 @@ export interface SessionState {
   conversationId?: string;
   status: 'idle' | 'busy' | 'error';
   mode?: ClaudeMode;
+  model?: string;
   createdAt: number;
   lastActiveAt: number;
 }

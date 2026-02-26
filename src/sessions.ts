@@ -86,7 +86,7 @@ loadFromDisk();
 
 // --- Public API ---
 
-export function createSession(repoPath: string, name?: string, mode?: ClaudeMode, repoPaths?: string[]): SessionState {
+export function createSession(repoPath: string, name?: string, mode?: ClaudeMode, repoPaths?: string[], model?: string): SessionState {
   const id = uuidv4();
 
   // Multi-folder workspace: derive repoPath from common parent
@@ -114,6 +114,7 @@ export function createSession(repoPath: string, name?: string, mode?: ClaudeMode
     ...(effectiveRepoPaths ? { repoPaths: effectiveRepoPaths } : {}),
     status: 'idle',
     mode,
+    ...(model ? { model } : {}),
     createdAt: now,
     lastActiveAt: now,
   };
