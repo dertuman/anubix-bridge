@@ -1,5 +1,6 @@
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
+import { DEFAULT_MODEL } from '../commands.js';
 import { getSession, updateSession } from '../sessions.js';
 import type { ClaudeMode, SessionState } from '../types.js';
 import { shortId } from '../utils.js';
@@ -209,7 +210,7 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
-      ...(session.model ? { model: session.model } : {}),
+      model: session.model || DEFAULT_MODEL,
     },
   };
 
