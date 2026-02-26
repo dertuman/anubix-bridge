@@ -122,6 +122,17 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
+        // Intercept /model command
+        const modelResult = handleModelCommand(payload.content.trim(), sessionId);
+        if (modelResult) {
+          send(ws, {
+            type: 'result',
+            result: modelResult,
+            sessionId,
+          });
+          return;
+        }
+
         // Intercept /preview commands at the bridge level
         const previewResult = handlePreviewCommand(payload.content.trim(), sessionId);
         if (previewResult) {
@@ -211,6 +222,82 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
   ws.on('error', (err) => {
     console.error(`WebSocket error for session ${sessionId}:`, err.message);
   });
+}
+
+/**
+ * Intercepts /model commands and returns a response string,
+ * or null if the message is not a model command.
+ *
+ * Usage:
+ *   /model [1|2|3|opus|sonnet|haiku]
+ */
+function handleModelCommand(content: string, sessionId: string): string | null {
+  if (!content.startsWith('/model')) return null;
+
+  const parts = content.split(/\s+/);
+  const modelArg = parts[1]?.toLowerCase();
+
+  // Available models list
+  const models = [
+    { name: 'claude-opus-4-6', label: 'Opus 4.6 - Most powerful, best for complex reasoning' },
+    { name: 'claude-sonnet-4-6', label: 'Sonnet 4.6 - Balanced performance and speed (recommended)' },
+    { name: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fastest and most affordable' },
+  ];
+
+  if (!modelArg) {
+    const session = getSession(sessionId);
+    const currentModel = session?.model || 'claude-opus-4-6';
+    const currentIndex = models.findIndex(m => m.name === currentModel);
+    const currentLabel = currentIndex >= 0 ? `${currentIndex + 1}. ${models[currentIndex].label}` : currentModel;
+
+    let list = '📋 Available Models:\n\n';
+    models.forEach((m, i) => {
+      const marker = m.name === currentModel ? '→' : ' ';
+      list += `${marker} ${i + 1}. ${m.label}\n`;
+    });
+    list += `\n✨ Current: ${currentLabel}`;
+    list += '\n\n💡 Usage: /model [1|2|3] or /model [opus|sonnet|haiku]';
+
+    return list;
+  }
+
+  // Map number, alias, or full name to model
+  let modelName: string | undefined;
+
+  if (/^\d+$/.test(modelArg)) {
+    const index = parseInt(modelArg, 10) - 1;
+    if (index >= 0 && index < models.length) {
+      modelName = models[index].name;
+    }
+  } else {
+    const modelMap: Record<string, string> = {
+      'opus': 'claude-opus-4-6',
+      'sonnet': 'claude-sonnet-4-6',
+      'haiku': 'claude-haiku-4-5-20251001',
+    };
+    modelName = modelMap[modelArg] || modelArg;
+  }
+
+  if (!modelName) {
+    return '❌ Invalid model selection. Use /model to see available options.';
+  }
+
+  try {
+    // Update session model
+    updateSession(sessionId, { model: modelName });
+
+    // Switch model in live conversation if one exists
+    switchModel(sessionId, modelName).catch((err) => {
+      console.error(`Failed to switch live model:`, err);
+    });
+
+    const modelInfo = models.find(m => m.name === modelName);
+    const displayName = modelInfo ? modelInfo.label : modelName;
+    return `✅ Model switched to:\n${displayName}`;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `❌ Failed to switch model: ${message}`;
+  }
 }
 
 /**
