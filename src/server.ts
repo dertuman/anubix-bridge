@@ -19,7 +19,7 @@ import sessionsRouter from './routes/sessions.js';
 
 // Install log capture as early as possible so all logs are buffered
 installLogCapture();
-import { handleWebSocket } from './ws/handler.js';
+import { handleWebSocket, isAlive, setAlive } from './ws/handler.js';
 
 const PORT = parseInt(process.env.PORT || '3456', 10);
 delete process.env.PORT; // Prevent child processes (e.g. npm run dev) from inheriting this
@@ -93,28 +93,27 @@ app.use((req, res) => {
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-// --- WebSocket heartbeat (30s) — detect dead connections ---
+// --- WebSocket heartbeat (30s) -- detect dead connections ---
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const heartbeatInterval = setInterval(() => {
   for (const ws of wss.clients) {
-    const sock = ws as WebSocket & { isAlive?: boolean };
-    if (sock.isAlive === false) {
+    if (!isAlive(ws as WebSocket)) {
       console.log('Heartbeat: terminating dead connection');
-      sock.terminate();
+      ws.terminate();
       continue;
     }
-    sock.isAlive = false;
-    sock.ping();
+    setAlive(ws as WebSocket, false);
+    ws.ping();
   }
 }, HEARTBEAT_INTERVAL_MS);
 
-// Handle WebSocket upgrade — bridge sessions go to WSS, everything else proxied to dev server
+// Handle WebSocket upgrade -- bridge sessions go to WSS, everything else proxied to dev server
 server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const url = new URL(request.url || '', `http://localhost:${PORT}`);
   const pathMatch = url.pathname.match(/^\/ws\/(.+)$/);
 
   if (!pathMatch) {
-    // Not a bridge WebSocket — proxy to dev server (HMR, hot reload, etc.)
+    // Not a bridge WebSocket -- proxy to dev server (HMR, hot reload, etc.)
     devProxy.ws(request, socket, head, { target: `http://127.0.0.1:${DEV_SERVER_PORT}` });
     return;
   }
@@ -135,15 +134,8 @@ server.on('upgrade', (request: IncomingMessage, socket, head) => {
   const lastSeq = lastSeqParam !== null ? parseInt(lastSeqParam, 10) : undefined;
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request, sessionId, lastSeq);
+    handleWebSocket(ws as WebSocket, sessionId, lastSeq);
   });
-});
-
-// The 'connection' event is emitted with custom args from handleUpgrade + emit
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(wss as any).on('connection', (ws: any, _request: any, sessionId: string, lastSeq?: number) => {
-  console.log(`WebSocket connected: session ${sessionId}${lastSeq !== undefined ? ` (lastSeq=${lastSeq})` : ''}`);
-  handleWebSocket(ws, sessionId, lastSeq);
 });
 
 const HOST = process.env.HOST || '0.0.0.0';

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url';
 
 import type { WsServerPayload } from './types.js';
 
+const MAX_MESSAGES_PER_SESSION = 10_000;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -99,6 +101,9 @@ export function appendMessage(sessionId: string, payload: WsServerPayload): numb
   const log = getOrCreateLog(sessionId);
   const seq = log.nextSeq++;
   log.messages.push({ seq, payload });
+  if (log.messages.length > MAX_MESSAGES_PER_SESSION) {
+    log.messages = log.messages.slice(-MAX_MESSAGES_PER_SESSION);
+  }
   flushToDisk(sessionId);
   return seq;
 }

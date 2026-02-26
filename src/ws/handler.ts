@@ -1,16 +1,27 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, closeConversation, getCachedModels, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent.js';
+import { abortPrompt, closeConversation, getCachedModels, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent/index.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
 import { getSession, updateSession } from '../sessions.js';
 import type { WsClientPayload, WsServerPayload } from '../types.js';
+import { getErrorMessage } from '../utils.js';
 
-function send(ws: WebSocket, payload: WsServerPayload) {
+const wsAlive = new WeakMap<WebSocket, boolean>();
+
+function send(ws: WebSocket, payload: WsServerPayload & { seq?: number }) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(payload));
   }
+}
+
+export function isAlive(ws: WebSocket): boolean {
+  return wsAlive.get(ws) ?? false;
+}
+
+export function setAlive(ws: WebSocket, alive: boolean) {
+  wsAlive.set(ws, alive);
 }
 
 export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: number) {
@@ -22,20 +33,16 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
     return;
   }
 
-  // Register this socket so runPrompt always uses the latest connection
   registerSocket(sessionId, ws);
 
-  // Mark socket alive for heartbeat detection
-  (ws as any).isAlive = true;
-  ws.on('pong', () => { (ws as any).isAlive = true; });
+  wsAlive.set(ws, true);
+  ws.on('pong', () => { wsAlive.set(ws, true); });
 
-  // 1. Send session init (direct, not buffered)
   send(ws, {
     type: 'session_init',
     sessionId: session.id,
   });
 
-  // 2. Send session status with pending flags (direct)
   const pendingApproval = hasPendingApproval(sessionId);
   const pendingQuestion = hasPendingQuestion(sessionId);
   send(ws, {
@@ -46,7 +53,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
     hasPendingQuestion: pendingQuestion,
   });
 
-  // 2b. Re-send stored approval/question payloads so the frontend can show them
   if (pendingApproval) {
     const approvalPayload = getLastApprovalPayload(sessionId);
     if (approvalPayload) {
@@ -60,7 +66,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
     }
   }
 
-  // 3. Replay missed messages if lastSeq provided
   if (lastSeq !== undefined && lastSeq >= 0) {
     const missed = getMessagesAfter(sessionId, lastSeq);
     if (missed.length > 0) {
@@ -76,7 +81,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
     }
   }
 
-  // 4. Send commands — merge Claude SDK commands with bridge-level commands
   const commands = [...BRIDGE_COMMANDS, ...getCommands(sessionId)];
   send(ws, { type: 'commands_available', commands });
 
@@ -97,7 +101,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
-        // Log the user message into the message log so both apps see it
         const userPayload: WsServerPayload = {
           type: 'user_message',
           content: payload.content.trim(),
@@ -106,15 +109,12 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
         };
         const userSeq = appendMessage(sessionId, userPayload);
 
-        // Update lastActiveAt on the session
         updateSession(sessionId, { lastActiveAt: Date.now() });
 
-        // Broadcast user message seq back so the sending client can track it
-        send(ws, { ...userPayload, seq: userSeq } as any);
+        send(ws, { ...userPayload, seq: userSeq });
 
-        // Intercept /clear command
         if (payload.content.trim() === '/clear') {
-          closeConversation(sessionId); // Kill persistent subprocess
+          closeConversation(sessionId);
           clearSessionLog(sessionId);
           updateSession(sessionId, { conversationId: undefined, status: 'idle' });
           send(ws, { type: 'session_cleared', sessionId });
@@ -122,7 +122,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
-        // Intercept /model command
         const modelResult = handleModelCommand(payload.content.trim(), sessionId);
         if (modelResult) {
           send(ws, {
@@ -133,7 +132,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
-        // Intercept /preview commands at the bridge level
         const previewResult = handlePreviewCommand(payload.content.trim(), sessionId);
         if (previewResult) {
           send(ws, {
@@ -144,7 +142,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
-        // Check if session is already busy
         const current = getSession(sessionId);
         if (current?.status === 'busy') {
           send(ws, {
@@ -154,8 +151,7 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
-        // Run the prompt (streams responses back via WebSocket)
-        await runPrompt(sessionId, payload.content, ws, payload.images);
+        await runPrompt(sessionId, payload.content, payload.images);
         break;
       }
 
@@ -173,7 +169,7 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
       }
 
       case 'abort': {
-        abortPrompt(sessionId, ws);
+        abortPrompt(sessionId);
         break;
       }
 
@@ -190,8 +186,7 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
             sessionId,
           });
         } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : 'Failed to switch model';
-          send(ws, { type: 'error', message: errorMsg });
+          send(ws, { type: 'error', message: getErrorMessage(err) });
         }
         break;
       }
@@ -220,12 +215,6 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
   });
 }
 
-/**
- * Intercepts /model commands and returns a response string,
- * or null if the message is not a model command.
- *
- * Models are fetched dynamically from the SDK — no hardcoded list.
- */
 function handleModelCommand(content: string, sessionId: string): string | null {
   if (content !== '/model' && !content.startsWith('/model ')) return null;
 
@@ -236,7 +225,6 @@ function handleModelCommand(content: string, sessionId: string): string | null {
 
   const modelArg = content.slice('/model'.length).trim().toLowerCase() || undefined;
 
-  // No argument → show menu
   if (!modelArg) {
     const session = getSession(sessionId);
     const currentModel = session?.model;
@@ -250,7 +238,6 @@ function handleModelCommand(content: string, sessionId: string): string | null {
     return list;
   }
 
-  // Match by: 1-based index, substring of displayName/value, or exact value
   const match = models.find((_, i) => modelArg === String(i + 1))
              || models.find(m => m.displayName.toLowerCase().includes(modelArg))
              || models.find(m => m.value.toLowerCase().includes(modelArg));
@@ -267,16 +254,6 @@ function handleModelCommand(content: string, sessionId: string): string | null {
   return `Model switched to: ${match.displayName}`;
 }
 
-/**
- * Intercepts /preview commands and returns a response string,
- * or null if the message is not a preview command.
- *
- * Usage:
- *   /preview start [port] [command]
- *   /preview stop
- *   /preview status
- *   /preview logs [tail]
- */
 function handlePreviewCommand(content: string, sessionId: string): string | null {
   if (content !== '/preview' && !content.startsWith('/preview ')) return null;
 
@@ -315,7 +292,6 @@ function handlePreviewCommand(content: string, sessionId: string): string | null
         return 'Usage: /preview start [port] [command] | /preview stop | /preview status | /preview logs [n]';
     }
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `Preview error: ${message}`;
+    return `Preview error: ${getErrorMessage(err)}`;
   }
 }
