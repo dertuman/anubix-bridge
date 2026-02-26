@@ -88,8 +88,10 @@ const sessionCommands = new Map<
 // Active WebSocket per session — allows reconnects to pick up a running prompt
 const sessionSockets = new Map<string, WebSocket>();
 
-// Default model for new sessions
-const DEFAULT_MODEL = 'claude-opus-4-6';
+// Global model cache — fetched once from the SDK via supportedModels()
+let cachedModels: Array<{ value: string; displayName: string; description: string }> | null = null;
+
+export function getCachedModels() { return cachedModels; }
 
 // ── Persistent conversations ────────────────────────────────
 // One subprocess per session, kept alive across messages.
@@ -551,6 +553,20 @@ async function processConversationLoop(
               console.error(`[${tag}] supportedCommands failed:`, err);
             }
           }
+
+          // Cache available models globally (only need to fetch once)
+          if (!cachedModels) {
+            try {
+              console.log(`[${tag}] Fetching supportedModels...`);
+              const models = await conversation.supportedModels();
+              if (models && Array.isArray(models)) {
+                cachedModels = models;
+                console.log(`[${tag}] Cached ${models.length} models: ${models.map(m => m.value).join(', ')}`);
+              }
+            } catch (err) {
+              console.error(`[${tag}] supportedModels failed:`, err);
+            }
+          }
           break;
         }
 
@@ -737,7 +753,7 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
-      model: session.model || DEFAULT_MODEL,
+      ...(session.model ? { model: session.model } : {}),
     },
   };
 

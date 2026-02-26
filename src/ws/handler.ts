@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, closeConversation, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent.js';
+import { abortPrompt, closeConversation, getCachedModels, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
@@ -179,23 +179,19 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
 
       case 'switch_model': {
         try {
-          // Update session model
           updateSession(sessionId, { model: payload.model });
-
-          // Switch model in live conversation if one exists
           await switchModel(sessionId, payload.model);
 
+          const models = getCachedModels();
+          const info = models?.find(m => m.value === payload.model);
           send(ws, {
             type: 'result',
-            result: `Model switched to: ${payload.model || 'default'}`,
+            result: `Model switched to: ${info?.displayName || payload.model || 'default'}`,
             sessionId,
           });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : 'Failed to switch model';
-          send(ws, {
-            type: 'error',
-            message: errorMsg,
-          });
+          send(ws, { type: 'error', message: errorMsg });
         }
         break;
       }
@@ -228,76 +224,47 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
  * Intercepts /model commands and returns a response string,
  * or null if the message is not a model command.
  *
- * Usage:
- *   /model [1|2|3|opus|sonnet|haiku]
+ * Models are fetched dynamically from the SDK — no hardcoded list.
  */
 function handleModelCommand(content: string, sessionId: string): string | null {
-  if (!content.startsWith('/model')) return null;
+  if (content !== '/model' && !content.startsWith('/model ')) return null;
 
-  const parts = content.split(/\s+/);
-  const modelArg = parts[1]?.toLowerCase();
+  const models = getCachedModels();
+  if (!models) {
+    return 'Models not loaded yet. Send a message first, then try /model again.';
+  }
 
-  // Available models list
-  const models = [
-    { name: 'claude-opus-4-6', label: 'Opus 4.6 - Most powerful, best for complex reasoning' },
-    { name: 'claude-sonnet-4-6', label: 'Sonnet 4.6 - Balanced performance and speed (recommended)' },
-    { name: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fastest and most affordable' },
-  ];
+  const modelArg = content.slice('/model'.length).trim().toLowerCase() || undefined;
 
+  // No argument → show menu
   if (!modelArg) {
     const session = getSession(sessionId);
-    const currentModel = session?.model || 'claude-opus-4-6';
-    const currentIndex = models.findIndex(m => m.name === currentModel);
-    const currentLabel = currentIndex >= 0 ? `${currentIndex + 1}. ${models[currentIndex].label}` : currentModel;
+    const currentModel = session?.model;
 
-    let list = '📋 Available Models:\n\n';
+    let list = 'Available Models:\n\n';
     models.forEach((m, i) => {
-      const marker = m.name === currentModel ? '→' : ' ';
-      list += `${marker} ${i + 1}. ${m.label}\n`;
+      const marker = m.value === currentModel ? '→' : ' ';
+      list += `${marker} ${i + 1}. ${m.displayName} — ${m.description}\n`;
     });
-    list += `\n✨ Current: ${currentLabel}`;
-    list += '\n\n💡 Usage: /model [1|2|3] or /model [opus|sonnet|haiku]';
-
+    list += `\nUsage: /model [number] or /model [name]`;
     return list;
   }
 
-  // Map number, alias, or full name to model
-  let modelName: string | undefined;
+  // Match by: 1-based index, substring of displayName/value, or exact value
+  const match = models.find((_, i) => modelArg === String(i + 1))
+             || models.find(m => m.displayName.toLowerCase().includes(modelArg))
+             || models.find(m => m.value.toLowerCase().includes(modelArg));
 
-  if (/^\d+$/.test(modelArg)) {
-    const index = parseInt(modelArg, 10) - 1;
-    if (index >= 0 && index < models.length) {
-      modelName = models[index].name;
-    }
-  } else {
-    const modelMap: Record<string, string> = {
-      'opus': 'claude-opus-4-6',
-      'sonnet': 'claude-sonnet-4-6',
-      'haiku': 'claude-haiku-4-5-20251001',
-    };
-    modelName = modelMap[modelArg] || modelArg;
+  if (!match) {
+    return 'Unknown model. Use /model to see available options.';
   }
 
-  if (!modelName) {
-    return '❌ Invalid model selection. Use /model to see available options.';
-  }
+  updateSession(sessionId, { model: match.value });
+  switchModel(sessionId, match.value).catch((err) => {
+    console.error(`Failed to switch live model:`, err);
+  });
 
-  try {
-    // Update session model
-    updateSession(sessionId, { model: modelName });
-
-    // Switch model in live conversation if one exists
-    switchModel(sessionId, modelName).catch((err) => {
-      console.error(`Failed to switch live model:`, err);
-    });
-
-    const modelInfo = models.find(m => m.name === modelName);
-    const displayName = modelInfo ? modelInfo.label : modelName;
-    return `✅ Model switched to:\n${displayName}`;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `❌ Failed to switch model: ${message}`;
-  }
+  return `Model switched to: ${match.displayName}`;
 }
 
 /**
@@ -311,16 +278,17 @@ function handleModelCommand(content: string, sessionId: string): string | null {
  *   /preview logs [tail]
  */
 function handlePreviewCommand(content: string, sessionId: string): string | null {
-  if (!content.startsWith('/preview')) return null;
+  if (content !== '/preview' && !content.startsWith('/preview ')) return null;
 
-  const parts = content.split(/\s+/);
-  const sub = parts[1] || 'status';
+  const args = content.slice('/preview'.length).trim();
+  const parts = args ? args.split(/\s+/) : [];
+  const sub = parts[0] || 'status';
 
   try {
     switch (sub) {
       case 'start': {
-        const port = parts[2] ? parseInt(parts[2], 10) : undefined;
-        const command = parts.slice(3).join(' ') || undefined;
+        const port = parts[1] ? parseInt(parts[1], 10) : undefined;
+        const command = parts.slice(2).join(' ') || undefined;
         const status = startDevServer({ sessionId, port, command });
         return `Preview started\nCommand: ${status.command}\nPort: ${status.port}\nStatus: ${status.status}`;
       }
@@ -337,7 +305,7 @@ function handlePreviewCommand(content: string, sessionId: string): string | null
       }
 
       case 'logs': {
-        const tail = parts[2] ? parseInt(parts[2], 10) : 30;
+        const tail = parts[1] ? parseInt(parts[1], 10) : 30;
         const lines = getLogs(tail);
         if (lines.length === 0) return 'No logs yet.';
         return lines.join('\n');
