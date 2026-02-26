@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, closeConversation, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, unregisterSocket } from '../agent.js';
+import { abortPrompt, closeConversation, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
@@ -163,6 +163,29 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
 
       case 'abort': {
         abortPrompt(sessionId, ws);
+        break;
+      }
+
+      case 'switch_model': {
+        try {
+          // Update session model
+          updateSession(sessionId, { model: payload.model });
+
+          // Switch model in live conversation if one exists
+          await switchModel(sessionId, payload.model);
+
+          send(ws, {
+            type: 'result',
+            result: `Model switched to: ${payload.model || 'default'}`,
+            sessionId,
+          });
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : 'Failed to switch model';
+          send(ws, {
+            type: 'error',
+            message: errorMsg,
+          });
+        }
         break;
       }
 

@@ -88,6 +88,9 @@ const sessionCommands = new Map<
 // Active WebSocket per session — allows reconnects to pick up a running prompt
 const sessionSockets = new Map<string, WebSocket>();
 
+// Default model for new sessions
+const DEFAULT_MODEL = 'claude-opus-4-6';
+
 // ── Persistent conversations ────────────────────────────────
 // One subprocess per session, kept alive across messages.
 interface LiveConversation {
@@ -260,6 +263,23 @@ export function closeConversation(sessionId: string) {
     live.conversation.close();
     liveConversations.delete(sessionId);
     activeQueries.delete(sessionId);
+  }
+}
+
+/**
+ * Switch model for an active conversation.
+ * Uses the SDK's setModel() method to switch models mid-conversation.
+ */
+export async function switchModel(sessionId: string, model: string | undefined) {
+  const live = liveConversations.get(sessionId);
+  if (live) {
+    try {
+      await live.conversation.setModel(model);
+      console.log(`[${sessionId.slice(0, 8)}] Switched model to: ${model || 'default'}`);
+    } catch (err) {
+      console.error(`[${sessionId.slice(0, 8)}] Failed to switch model:`, err);
+      throw err;
+    }
   }
 }
 
@@ -717,7 +737,7 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
-      ...(session.model ? { model: session.model } : {}),
+      model: session.model || DEFAULT_MODEL,
     },
   };
 

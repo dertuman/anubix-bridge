@@ -41,12 +41,18 @@ export interface WsClientPing {
   type: 'ping';
 }
 
+export interface WsClientSwitchModel {
+  type: 'switch_model';
+  model?: string;
+}
+
 export type WsClientPayload =
   | WsClientMessage
   | WsClientApproval
   | WsClientQuestionAnswer
   | WsClientAbort
-  | WsClientPing;
+  | WsClientPing
+  | WsClientSwitchModel;
 
 // --- WebSocket: Server → Client ---
 
