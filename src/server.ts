@@ -19,6 +19,7 @@ import sessionsRouter from './routes/sessions.js';
 
 // Install log capture as early as possible so all logs are buffered
 installLogCapture();
+import { listSessions } from './sessions.js';
 import { handleWebSocket, isAlive, setAlive } from './ws/handler.js';
 
 const PORT = parseInt(process.env.PORT || '3456', 10);
@@ -70,6 +71,13 @@ app.use('/_bridge/credentials', credentialsRouter);
 app.use('/_bridge/exec', execRouter);
 app.use('/_bridge/logs', logsRouter);
 app.use('/_bridge/repos', reposRouter);
+
+app.get('/_bridge/activity', (_req, res) => {
+  const sessions = listSessions();
+  const lastActiveAt = Math.max(...sessions.map(s => s.lastActiveAt || 0), 0);
+  const idleSeconds = lastActiveAt > 0 ? Math.floor((Date.now() - lastActiveAt) / 1000) : -1;
+  res.json({ lastActiveAt, idleSeconds, sessions: sessions.length });
+});
 
 // --- Reverse proxy: forward everything else to the dev server on port 3000 ---
 // This lets the user's app (Next.js, Vite, etc.) be accessible at the same URL
