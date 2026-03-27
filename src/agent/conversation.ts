@@ -287,6 +287,13 @@ export async function processConversationLoop(
     const errMessage = getErrorMessage(err);
     console.error(`[${tag}] Conversation loop error: ${errMessage}`);
 
+    // If conversation can't be found (e.g. after machine restart), clear the
+    // stale conversationId so the next message starts a fresh conversation.
+    if (/no conversation found/i.test(errMessage)) {
+      updateSession(sessionId, { conversationId: undefined });
+      console.log(`[${tag}] Cleared stale conversationId — next message will start fresh`);
+    }
+
     const subtype = classifyError(errMessage);
     sentResultOrError = true;
     sendToSession(sessionId, { type: 'error', message: errMessage, subtype });
