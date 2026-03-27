@@ -9,7 +9,7 @@ const MAX_MESSAGES_PER_SESSION = 10_000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MESSAGES_DIR = join(__dirname, '..', 'data', 'messages');
+const MESSAGES_DIR = join(process.env.DATA_DIR || join(__dirname, '..', 'data'), 'messages');
 const FLUSH_DEBOUNCE_MS = 500;
 
 export interface SequencedMessage {

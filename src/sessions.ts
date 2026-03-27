@@ -34,7 +34,7 @@ export function computeCommonParent(paths: string[]): string {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const DATA_DIR = join(__dirname, '..', 'data');
+const DATA_DIR = process.env.DATA_DIR || join(__dirname, '..', 'data');
 const SESSIONS_FILE = join(DATA_DIR, 'sessions.json');
 const FLUSH_DEBOUNCE_MS = 500;
 
