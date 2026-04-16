@@ -6,7 +6,7 @@ import type { ClaudeMode, SessionState } from '../types.js';
 import { shortId } from '../utils.js';
 import { buildCanUseToolHandler, buildHistoryContext, processConversationLoop } from './conversation.js';
 import { MessageQueue } from './queue.js';
-import { ctx, getAllContexts, sendToSession } from './state.js';
+import { ctx, getAllContexts, pickLatestModel, sendToSession } from './state.js';
 
 export { MessageQueue } from './queue.js';
 export {
@@ -14,6 +14,7 @@ export {
   type LiveConversation,
   ctx,
   getCachedModels,
+  pickLatestModel,
   registerSocket,
   unregisterSocket,
   sendToSession,
@@ -210,7 +211,7 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
-      model: session.model || DEFAULT_MODEL,
+      model: session.model || pickLatestModel() || DEFAULT_MODEL,
     },
   };
 

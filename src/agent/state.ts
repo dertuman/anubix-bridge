@@ -43,6 +43,50 @@ export function setCachedModels(models: Array<{ value: string; displayName: stri
   cachedModels = models;
 }
 
+function parseFamilyVersion(value: string, family: string): number[] | null {
+  const prefix = `claude-${family}-`;
+  if (!value.startsWith(prefix)) return null;
+  const nums = value
+    .slice(prefix.length)
+    .split('-')
+    .map((p) => parseInt(p, 10))
+    .filter((n) => Number.isFinite(n));
+  return nums.length > 0 ? nums : null;
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * Returns the newest model id known to the SDK, preferring Opus → Sonnet → Haiku.
+ * Picks the highest trailing version (e.g. claude-opus-4-7 beats claude-opus-4-6).
+ * Returns null if supportedModels() hasn't been cached yet — callers should
+ * fall back to DEFAULT_MODEL in that case.
+ */
+export function pickLatestModel(): string | null {
+  if (!cachedModels || cachedModels.length === 0) return null;
+
+  for (const family of ['opus', 'sonnet', 'haiku']) {
+    let best: { value: string; version: number[] } | null = null;
+    for (const m of cachedModels) {
+      const version = parseFamilyVersion(m.value, family);
+      if (!version) continue;
+      if (!best || compareVersions(version, best.version) > 0) {
+        best = { value: m.value, version };
+      }
+    }
+    if (best) return best.value;
+  }
+
+  return cachedModels[0]?.value ?? null;
+}
+
 export function registerSocket(sessionId: string, ws: WebSocket) {
   const c = ctx(sessionId);
   if (c.socket && c.socket !== ws) {
