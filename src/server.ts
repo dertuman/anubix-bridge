@@ -9,6 +9,7 @@ import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
 
 import { shutdownPreview } from './preview.js';
+import { startRegistration, type RegistrationHandle } from './register.js';
 import credentialsRouter from './routes/credentials.js';
 import envRouter from './routes/env.js';
 import execRouter from './routes/exec.js';
@@ -16,6 +17,7 @@ import logsRouter, { installLogCapture } from './routes/logs.js';
 import previewRouter from './routes/preview.js';
 import reposRouter from './routes/repos.js';
 import sessionsRouter from './routes/sessions.js';
+import { startQuickTunnel, type TunnelHandle } from './tunnel.js';
 
 // Install log capture as early as possible so all logs are buffered
 installLogCapture();
@@ -32,8 +34,22 @@ if (!BRIDGE_API_KEY) {
   process.exit(1);
 }
 
+// Log the key prefix so it's easy to spot when .env has a stale duplicate
+// entry (dotenv uses the FIRST occurrence — the most common reason the web
+// reports "connected" but all session requests 401).
+const keyPreview = `${BRIDGE_API_KEY.slice(0, 4)}…${BRIDGE_API_KEY.slice(-4)}`;
+console.log(`[bridge] using BRIDGE_API_KEY ${keyPreview} (${BRIDGE_API_KEY.length} chars)`);
+
 const app = express();
-app.use(cors());
+// Explicit CORS config — preflight (OPTIONS) must allow x-api-key or the
+// browser rejects the real request with "Failed to fetch" and the web UI
+// reports "Unable to reach bridge server".
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-api-key', 'x-install-token'],
+  credentials: false,
+}));
 app.use(express.json());
 
 // --- API key auth middleware ---
@@ -42,6 +58,9 @@ function authMiddleware(
   res: express.Response,
   next: express.NextFunction,
 ) {
+  // Never auth-gate preflights — cors() already answered them.
+  if (req.method === 'OPTIONS') return next();
+
   const key =
     req.headers['x-api-key'] ||
     (req.query.key as string | undefined);
@@ -147,18 +166,72 @@ server.on('upgrade', (request: IncomingMessage, socket, head) => {
 });
 
 const HOST = process.env.HOST || '0.0.0.0';
+let tunnel: TunnelHandle | null = null;
+let registration: RegistrationHandle | null = null;
+
 server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`Bridge API: http://localhost:${PORT}/_bridge/`);
   console.log(`WebSocket: ws://localhost:${PORT}/ws/:sessionId?key=...`);
   console.log(`Dev server preview: proxied from port ${DEV_SERVER_PORT}`);
   console.log(`Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
+
+  void initTunnelAndRegister();
 });
+
+async function initTunnelAndRegister() {
+  const installToken = process.env.ANUBIX_INSTALL_TOKEN;
+  // Default to the hosted anubix.ai. Users running a different anubix-web
+  // can override. Fly.io/production deployments don't ship an install token
+  // so this whole branch is skipped anyway.
+  const webUrl = process.env.ANUBIX_WEB_URL || 'https://anubix.ai';
+  const tunnelMode = (process.env.TUNNEL_MODE || (installToken ? 'auto' : 'none')).toLowerCase();
+
+  if (tunnelMode === 'none') return;
+
+  if (!installToken) {
+    console.warn(
+      `[tunnel] TUNNEL_MODE=${tunnelMode} requires ANUBIX_INSTALL_TOKEN. Skipping self-registration.`,
+    );
+    return;
+  }
+
+  let publicUrl: string | null = null;
+
+  if (tunnelMode === 'auto') {
+    try {
+      tunnel = await startQuickTunnel(PORT);
+      publicUrl = tunnel.publicUrl;
+    } catch (err) {
+      console.error('[tunnel] failed to start Cloudflare Quick Tunnel:', err instanceof Error ? err.message : err);
+      return;
+    }
+  } else if (tunnelMode === 'manual') {
+    publicUrl = process.env.PUBLIC_URL || null;
+    if (!publicUrl) {
+      console.warn('[tunnel] TUNNEL_MODE=manual requires PUBLIC_URL. Skipping self-registration.');
+      return;
+    }
+  } else {
+    console.warn(`[tunnel] unknown TUNNEL_MODE=${tunnelMode}. Expected auto|manual|none.`);
+    return;
+  }
+
+  registration = startRegistration({
+    webUrl,
+    installToken,
+    initialPublicUrl: publicUrl,
+  });
+
+  tunnel?.onUrlChange((url) => registration?.updateUrl(url));
+}
 
 // --- Graceful shutdown ---
 function gracefulShutdown() {
   console.log('\nShutting down…');
   clearInterval(heartbeatInterval);
+  registration?.stop();
+  tunnel?.close();
   shutdownPreview();
   devProxy.close();
   wss.close();
