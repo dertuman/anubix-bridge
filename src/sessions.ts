@@ -89,13 +89,14 @@ loadFromDisk();
 export function createSession(repoPath: string, name?: string, mode?: ClaudeMode, repoPaths?: string[], model?: string): SessionState {
   const id = uuidv4();
 
-  // Multi-folder workspace: derive repoPath from common parent
+  // Multi-folder workspace: keep repoPath as the primary cwd. Sibling repos are
+  // passed to the Claude SDK as additionalDirectories at query time.
   let effectiveRepoPath = repoPath;
   let effectiveRepoPaths: string[] | undefined;
   let autoName = name;
 
   if (repoPaths && repoPaths.length >= 2) {
-    effectiveRepoPath = computeCommonParent(repoPaths);
+    effectiveRepoPath = repoPaths[0];
     effectiveRepoPaths = repoPaths;
     if (!autoName) {
       autoName = repoPaths.map((p) => p.split(/[\\/]/).pop()).join(' + ');

@@ -46,13 +46,19 @@ export interface WsClientSwitchModel {
   model?: string;
 }
 
+export interface WsClientPermissionMode {
+  type: 'permission_mode';
+  mode: 'default' | 'acceptEdits' | 'plan' | 'dontAsk';
+}
+
 export type WsClientPayload =
   | WsClientMessage
   | WsClientApproval
   | WsClientQuestionAnswer
   | WsClientAbort
   | WsClientPing
-  | WsClientSwitchModel;
+  | WsClientSwitchModel
+  | WsClientPermissionMode;
 
 // --- WebSocket: Server → Client ---
 

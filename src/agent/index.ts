@@ -1,4 +1,4 @@
-import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type PermissionMode, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import { DEFAULT_MODEL } from '../commands.js';
 import { getSession, updateSession } from '../sessions.js';
@@ -85,6 +85,17 @@ export async function switchModel(sessionId: string, model: string | undefined) 
   }
 }
 
+export async function setPermissionMode(sessionId: string, mode: PermissionMode): Promise<boolean> {
+  const c = ctx(sessionId);
+  if (!c.liveConversation) {
+    return false;
+  }
+
+  await c.liveConversation.conversation.setPermissionMode(mode);
+  console.log(`[${shortId(sessionId)}] Set permission mode to: ${mode}`);
+  return true;
+}
+
 export function closeAllConversations(): number {
   let count = 0;
   for (const [, c] of getAllContexts()) {
@@ -112,13 +123,15 @@ export async function runPrompt(
 
   updateSession(sessionId, { status: 'busy' });
 
+  const workspace = resolveWorkspacePaths(session);
+
   let workspacePrefix = '';
   if (session.repoPaths && session.repoPaths.length >= 2) {
     const folderList = session.repoPaths.map((p) => `- ${p}`).join('\n');
     workspacePrefix =
       `[Workspace Context] This session spans multiple project folders:\n` +
       `${folderList}\n` +
-      `Working directory: ${session.repoPath} (common parent)\n\n`;
+      `Working directory: ${workspace.cwd}\n\n`;
   }
   const effectivePrompt = workspacePrefix ? workspacePrefix + prompt : prompt;
 
@@ -204,9 +217,13 @@ export async function runPrompt(
   const queryOptions: Parameters<typeof query>[0] = {
     prompt: msgQueue,
     options: {
-      cwd: session.repoPath,
+      cwd: workspace.cwd,
+      ...(workspace.additionalDirectories.length > 0
+        ? { additionalDirectories: workspace.additionalDirectories }
+        : {}),
       allowedTools: [
         'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch',
+        'ExitPlanMode',
       ],
       env,
       includePartialMessages: true,
@@ -232,4 +249,19 @@ export async function runPrompt(
     sc.activeQuery = undefined;
     sc.aborted = false;
   });
+}
+
+function resolveWorkspacePaths(session: SessionState): { cwd: string; additionalDirectories: string[] } {
+  if (!session.repoPaths || session.repoPaths.length < 2) {
+    return { cwd: session.repoPath, additionalDirectories: [] };
+  }
+
+  const cwd = session.repoPaths.includes(session.repoPath)
+    ? session.repoPath
+    : session.repoPaths[0];
+
+  return {
+    cwd,
+    additionalDirectories: session.repoPaths.filter((p) => p !== cwd),
+  };
 }

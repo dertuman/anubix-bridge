@@ -1,6 +1,6 @@
 import type WebSocket from 'ws';
 
-import { abortPrompt, closeConversation, getCachedModels, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, switchModel, unregisterSocket } from '../agent/index.js';
+import { abortPrompt, closeConversation, getCachedModels, getCommands, getLastApprovalPayload, getLastQuestionPayload, hasPendingApproval, hasPendingQuestion, registerSocket, resolveApproval, resolveQuestion, runPrompt, setPermissionMode, switchModel, unregisterSocket } from '../agent/index.js';
 import { BRIDGE_COMMANDS } from '../commands.js';
 import { appendMessage, clearSessionLog, getMessagesAfter } from '../messageLog.js';
 import { startDevServer, stopDevServer, getStatus, getLogs } from '../preview.js';
@@ -142,6 +142,16 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           return;
         }
 
+        const permissionModeResult = await handlePermissionModeCommand(payload.content.trim(), sessionId);
+        if (permissionModeResult) {
+          send(ws, {
+            type: 'result',
+            result: permissionModeResult,
+            sessionId,
+          });
+          return;
+        }
+
         const current = getSession(sessionId);
         if (current?.status === 'busy') {
           send(ws, {
@@ -183,6 +193,22 @@ export function handleWebSocket(ws: WebSocket, sessionId: string, lastSeq?: numb
           send(ws, {
             type: 'result',
             result: `Model switched to: ${info?.displayName || payload.model || 'default'}`,
+            sessionId,
+          });
+        } catch (err) {
+          send(ws, { type: 'error', message: getErrorMessage(err) });
+        }
+        break;
+      }
+
+      case 'permission_mode': {
+        try {
+          const changed = await setPermissionMode(sessionId, payload.mode);
+          send(ws, {
+            type: 'result',
+            result: changed
+              ? `Permission mode set to: ${payload.mode}`
+              : 'No live Claude conversation. Next prompt will start in default permission mode.',
             sessionId,
           });
         } catch (err) {
@@ -252,6 +278,26 @@ function handleModelCommand(content: string, sessionId: string): string | null {
   });
 
   return `Model switched to: ${match.displayName}`;
+}
+
+async function handlePermissionModeCommand(content: string, sessionId: string): Promise<string | null> {
+  if (content !== '/exit-plan' && content !== '/plan') return null;
+
+  const mode = content === '/plan' ? 'plan' : 'default';
+  const changed = await setPermissionMode(sessionId, mode);
+
+  if (!changed && mode === 'default') {
+    updateSession(sessionId, { status: 'idle' });
+    return 'No live Claude conversation. Cleared busy state; next prompt will start outside plan mode.';
+  }
+
+  if (!changed) {
+    return 'No live Claude conversation. Send a prompt first, then use /plan if needed.';
+  }
+
+  return mode === 'default'
+    ? 'Exited plan mode.'
+    : 'Entered plan mode.';
 }
 
 function handlePreviewCommand(content: string, sessionId: string): string | null {
