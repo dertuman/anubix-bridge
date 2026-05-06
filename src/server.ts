@@ -17,7 +17,7 @@ import logsRouter, { installLogCapture } from './routes/logs.js';
 import previewRouter from './routes/preview.js';
 import reposRouter from './routes/repos.js';
 import sessionsRouter from './routes/sessions.js';
-import { startQuickTunnel, type TunnelHandle } from './tunnel.js';
+import { startNamedTunnel, startQuickTunnel, type TunnelHandle } from './tunnel.js';
 
 // Install log capture as early as possible so all logs are buffered
 installLogCapture();
@@ -197,13 +197,23 @@ async function initTunnelAndRegister() {
   }
 
   let publicUrl: string | null = null;
+  const tunnelName = process.env.TUNNEL_NAME;
 
   if (tunnelMode === 'auto') {
     try {
-      tunnel = await startQuickTunnel(PORT);
+      if (tunnelName) {
+        publicUrl = process.env.PUBLIC_URL || null;
+        if (!publicUrl) {
+          console.warn('[tunnel] TUNNEL_NAME requires PUBLIC_URL so the bridge knows its own address. Skipping.');
+          return;
+        }
+        tunnel = await startNamedTunnel(tunnelName, publicUrl, PORT);
+      } else {
+        tunnel = await startQuickTunnel(PORT);
+      }
       publicUrl = tunnel.publicUrl;
     } catch (err) {
-      console.error('[tunnel] failed to start Cloudflare Quick Tunnel:', err instanceof Error ? err.message : err);
+      console.error('[tunnel] failed to start cloudflared:', err instanceof Error ? err.message : err);
       return;
     }
   } else if (tunnelMode === 'manual') {
