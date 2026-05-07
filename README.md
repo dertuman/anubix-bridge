@@ -48,7 +48,7 @@ Live preview in client
 - **Tool approval flow** — Client gets notified when Claude wants to run a tool, user can approve/deny
 - **Multi-session** — Multiple sessions per machine, each with its own conversation
 - **Live preview** — HTTP + WebSocket proxy to the user's dev server
-- **Two Claude modes** — `sdk` (uses API key, pay per token) or `cli` (uses Claude subscription)
+- **Claude via CLI** — Default `CLAUDE_MODE=cli` uses your Claude Code subscription (no `ANTHROPIC_API_KEY` in `.env`; avoids accidental leaks or API billing)
 
 ---
 
@@ -78,18 +78,13 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...          # Required for 'sdk' mode
-BRIDGE_API_KEY=your-secret-here       # Shared secret — clients use this to authenticate
-PORT=3456                             # Bridge server port
-PREVIEW_PORT=3457                     # Optional separate port for preview proxy
-CLAUDE_MODE=cli                       # 'sdk' = API credits, 'cli' = Claude subscription
-REPOS_BASE_PATH=C:\Users\you\repos   # Base path for your local repositories
+BRIDGE_API_KEY=your-secret-here        # Shared secret — anubix-web uses this to authenticate
+CLAUDE_MODE=cli                        # Claude Code subscription (recommended)
+REPOS_BASE_PATH=C:\Users\you\repos    # Base path for your local repositories
+# Optional: PORT=3456
 ```
 
-**Claude modes:**
-
-- `sdk` — Uses `ANTHROPIC_API_KEY` to call the Anthropic API directly. You pay per tokens
-- `cli` — Uses your Claude Code CLI subscription. No API key needed (it's stripped from the environment).
+**Claude:** Keep `CLAUDE_MODE=cli` and **do not** put `ANTHROPIC_API_KEY` in `.env` unless you intentionally run rare `sdk` mode (direct API billing). The normal path uses the Claude Agent SDK with your local `claude` CLI and subscription credentials.
 
 ### 3. Start the bridge
 
@@ -100,7 +95,7 @@ npm run dev
 The bridge starts on `http://localhost:3456`. Verify it's working:
 
 ```bash
-curl -H "x-api-key: your-secret-here" http://localhost:3456/api/health
+curl -H "x-api-key: your-secret-here" http://localhost:3456/_bridge/health
 # {"status":"ok","version":"1.0.0","uptime":...}
 ```
 
@@ -144,7 +139,7 @@ cloudflared tunnel run anubix-bridge
 Verify it works:
 
 ```bash
-curl -H "x-api-key: your-secret-here" https://bridge.yourdomain.com/api/health
+curl -H "x-api-key: your-secret-here" https://bridge.yourdomain.com/_bridge/health
 # {"status":"ok","version":"1.0.0","uptime":...}
 ```
 
@@ -203,9 +198,10 @@ Adjust `--size` (in GB) and `--region` as needed. Use `fly platform regions` to 
 
 ### 3. Set secrets
 
+At minimum you need `BRIDGE_API_KEY`. For Claude, prefer **CLI/subscription** auth (e.g. `CLAUDE_AUTH_JSON` + `CLAUDE_MODE=cli` per your boot script) instead of storing `ANTHROPIC_API_KEY` on the machine, unless you deliberately use **sdk** (API-key) mode.
+
 ```bash
 fly secrets set \
-  ANTHROPIC_API_KEY=sk-ant-... \
   BRIDGE_API_KEY=a-strong-random-password \
   --app my-bridge-app
 ```
@@ -227,7 +223,7 @@ This builds the Docker image and deploys it. First deploy takes a few minutes.
 ### 5. Verify
 
 ```bash
-curl -H "x-api-key: YOUR_BRIDGE_API_KEY" https://my-bridge-app.fly.dev/api/health
+curl -H "x-api-key: YOUR_BRIDGE_API_KEY" https://my-bridge-app.fly.dev/_bridge/health
 # {"status":"ok","version":"1.0.0","uptime":...}
 ```
 
@@ -297,7 +293,7 @@ All REST endpoints require `x-api-key` header or `?key=` query parameter.
 ### Health
 
 ```
-GET /api/health
+GET /_bridge/health
 ```
 
 ### Sessions
@@ -401,7 +397,7 @@ anubix-bridge/
 - Multi-session support
 - Dockerfile + Fly.io config
 - Workspace initialization script (git clone, templates)
-- Two Claude modes (sdk / cli)
+- Claude via CLI subscription by default (optional sdk mode for API-key deployments)
 
 ### In Progress
 
@@ -413,6 +409,3 @@ anubix-bridge/
 - Patterns system (one-click feature templates)
 - Supabase Storage bucket auto-creation in setup wizard
 
-### To delete nul file
-
-del \\?\C:\Users\alex9\Documents\GitHub\anubix-bridge\nul

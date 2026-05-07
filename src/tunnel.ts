@@ -30,6 +30,13 @@ function cleanEnvForCloudflared(): NodeJS.ProcessEnv {
   return env;
 }
 
+/** QUIC can glitch behind some VPNs; set CLOUDFLARED_PROTOCOL=http2 to use HTTP/2 to Cloudflare edge instead. */
+function cloudflaredProtocolArgs(): string[] {
+  const p = (process.env.CLOUDFLARED_PROTOCOL || '').toLowerCase();
+  if (p === 'http2') return ['--protocol', 'http2'];
+  return [];
+}
+
 function handleSpawnError(err: Error) {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
     console.error(
@@ -86,8 +93,16 @@ export async function startNamedTunnel(
 
   const child = spawn(
     'cloudflared',
-    ['tunnel', '--no-autoupdate', '--config', configPath, 'run', tunnelName],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    [
+      'tunnel',
+      '--no-autoupdate',
+      ...cloudflaredProtocolArgs(),
+      '--config',
+      configPath,
+      'run',
+      tunnelName,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'], env: cleanEnvForCloudflared() },
   ).on('error', handleSpawnError);
 
   let connected = false;
@@ -139,7 +154,7 @@ export async function startNamedTunnel(
 export async function startQuickTunnel(port: number): Promise<TunnelHandle> {
   const child = spawn(
     'cloudflared',
-    ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`],
+    ['tunnel', '--no-autoupdate', ...cloudflaredProtocolArgs(), '--url', `http://localhost:${port}`],
     { stdio: ['ignore', 'pipe', 'pipe'], env: cleanEnvForCloudflared() },
   ).on('error', handleSpawnError);
 

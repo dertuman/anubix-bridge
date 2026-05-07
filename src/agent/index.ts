@@ -37,13 +37,29 @@ export function resolveMode(session: SessionState): ClaudeMode {
   return session.mode || (process.env.CLAUDE_MODE as ClaudeMode) || 'sdk';
 }
 
+/**
+ * Defaults applied to every Claude SDK invocation.
+ *   - 1M context window beta header (no-op for plans that already have it on)
+ *   - 32k thinking budget for "high reasoning" out of the box
+ *   - Disable adaptive thinking so MAX_THINKING_TOKENS is actually respected on Opus 4.6
+ *
+ * Anything the user explicitly sets in their host env wins (we only fill in
+ * blanks via `??=`).
+ */
+function applyClaudeDefaults(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  env.ANTHROPIC_BETAS ??= 'context-1m-2025-08-07';
+  env.MAX_THINKING_TOKENS ??= '32000';
+  env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING ??= '1';
+  return env;
+}
+
 export function buildEnvForMode(mode: ClaudeMode): Record<string, string | undefined> {
   if (mode === 'cli') {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
-    return env;
+    return applyClaudeDefaults(env);
   }
-  return { ...process.env };
+  return applyClaudeDefaults({ ...process.env });
 }
 
 export function abortPrompt(sessionId: string) {
@@ -228,7 +244,12 @@ export async function runPrompt(
       env,
       includePartialMessages: true,
       canUseTool: buildCanUseToolHandler(sessionId),
-      model: session.model || pickLatestModel() || DEFAULT_MODEL,
+      // Hard-pinned to DEFAULT_MODEL (claude-opus-4-6). We intentionally do NOT
+      // call pickLatestModel() here — auto-upgrading to the newest Opus broke
+      // expectations around 1M context + thinking budget tuning. Users can
+      // still override per-session via `session.model` (set on creation or via
+      // the /model command).
+      model: session.model || DEFAULT_MODEL,
     },
   };
 

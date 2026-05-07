@@ -1,9 +1,13 @@
 import 'dotenv/config';
 
+import { execSync } from 'child_process';
+import { readFileSync } from 'fs';
 import cors from 'cors';
 import express from 'express';
 import { createServer } from 'http';
 import httpProxy from 'http-proxy';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'http';
 import type WebSocket from 'ws';
@@ -39,6 +43,59 @@ if (!BRIDGE_API_KEY) {
 // reports "connected" but all session requests 401).
 const keyPreview = `${BRIDGE_API_KEY.slice(0, 4)}…${BRIDGE_API_KEY.slice(-4)}`;
 console.log(`[bridge] using BRIDGE_API_KEY ${keyPreview} (${BRIDGE_API_KEY.length} chars)`);
+
+const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
+
+/** What actually runs Claude when you use anubix-web: SDK from this repo + (in cli mode) your global `claude` binary on PATH. */
+function logClaudeToolingVersions() {
+  try {
+    const pkgPath = join(SERVER_DIR, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { dependencies?: Record<string, string> };
+    const sdk = pkg.dependencies?.['@anthropic-ai/claude-agent-sdk'] ?? '(missing)';
+    console.log(`[bridge] @anthropic-ai/claude-agent-sdk in package.json: ${sdk}`);
+  } catch {
+    console.warn('[bridge] could not read package.json for SDK dependency line');
+  }
+
+  const mode = (process.env.CLAUDE_MODE || 'sdk').toLowerCase();
+  if (mode !== 'cli') {
+    console.log(
+      '[bridge] CLAUDE_MODE=sdk — using ANTHROPIC_API_KEY from the environment. ' +
+        'For normal use prefer CLAUDE_MODE=cli and omit ANTHROPIC_API_KEY from .env.',
+    );
+    return;
+  }
+
+  try {
+    const shell = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh';
+    const out = execSync('claude --version', {
+      encoding: 'utf8',
+      shell,
+      timeout: 15_000,
+    })
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join(' | ');
+    console.log(`[bridge] Claude Code CLI (same as anubix-web will use on this machine): ${out || '(no output)'}`);
+  } catch {
+    console.warn(
+      '[bridge] `claude --version` failed. Install Claude Code CLI and ensure it is on PATH for the user that runs npm run dev.',
+    );
+  }
+}
+
+logClaudeToolingVersions();
+
+/** Resolved tunnel behaviour (for health + startup logs). No secrets. */
+function effectiveTunnelPlan(): 'off' | 'named' | 'quick' | 'manual' {
+  const rawToken = process.env.ANUBIX_INSTALL_TOKEN;
+  const mode = (process.env.TUNNEL_MODE || (rawToken ? 'auto' : 'none')).toLowerCase();
+  if (mode === 'none') return 'off';
+  if (mode === 'manual') return 'manual';
+  if (mode !== 'auto') return 'off';
+  return process.env.TUNNEL_NAME ? 'named' : 'quick';
+}
 
 const app = express();
 // Explicit CORS config — preflight (OPTIONS) must allow x-api-key or the
@@ -76,10 +133,28 @@ app.use('/_bridge', authMiddleware);
 
 // --- REST routes (all under /_bridge to avoid clashing with the preview app) ---
 app.get('/_bridge/health', (_req, res) => {
+  const webUrl = process.env.ANUBIX_WEB_URL || 'https://anubix.ai';
+  const tunnelMode = (
+    process.env.TUNNEL_MODE || (process.env.ANUBIX_INSTALL_TOKEN ? 'auto' : 'none')
+  ).toLowerCase();
   res.json({
     status: 'ok',
     version: '1.0.0',
     uptime: process.uptime(),
+    settings: {
+      tunnelMode,
+      tunnelPlan: effectiveTunnelPlan(),
+      tunnelName: process.env.TUNNEL_NAME || null,
+      publicUrl: process.env.PUBLIC_URL || null,
+      anubixWebUrl: webUrl,
+      port: PORT,
+      previewFallbackPort: DEV_SERVER_PORT,
+      claudeMode: process.env.CLAUDE_MODE || 'sdk',
+      reposBasePathConfigured: Boolean(process.env.REPOS_BASE_PATH),
+      installTokenConfigured: Boolean(process.env.ANUBIX_INSTALL_TOKEN),
+      cloudflaredProtocol:
+        (process.env.CLOUDFLARED_PROTOCOL || '').toLowerCase() === 'http2' ? 'http2' : 'quic',
+    },
   });
 });
 
@@ -169,12 +244,33 @@ const HOST = process.env.HOST || '0.0.0.0';
 let tunnel: TunnelHandle | null = null;
 let registration: RegistrationHandle | null = null;
 
+function logStartupConfigSummary() {
+  const plan = effectiveTunnelPlan();
+  const webUrl = process.env.ANUBIX_WEB_URL || 'https://anubix.ai';
+  const mode = (process.env.TUNNEL_MODE || (process.env.ANUBIX_INSTALL_TOKEN ? 'auto' : 'none')).toLowerCase();
+  console.log(
+    '[bridge] effective settings (compare with your .env):\n' +
+      `      TUNNEL_MODE=${mode}  tunnel plan: ${plan}\n` +
+      `      TUNNEL_NAME=${process.env.TUNNEL_NAME || '(unset)'}\n` +
+      `      PUBLIC_URL=${process.env.PUBLIC_URL || '(unset)'}\n` +
+      `      ANUBIX_WEB_URL=${webUrl}\n` +
+      `      PORT=${PORT}  dev preview fallback port: ${DEV_SERVER_PORT}\n` +
+      `      CLAUDE_MODE=${process.env.CLAUDE_MODE || 'sdk'}\n` +
+      `      REPOS_BASE_PATH=${process.env.REPOS_BASE_PATH ? 'set' : 'unset'}\n` +
+      `      ANUBIX_INSTALL_TOKEN=${process.env.ANUBIX_INSTALL_TOKEN ? 'set' : 'unset'}\n` +
+      `      cloudflared edge protocol: ${
+        (process.env.CLOUDFLARED_PROTOCOL || '').toLowerCase() === 'http2' ? 'http2' : 'quic (default)'
+      }`,
+  );
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`Bridge server running on http://localhost:${PORT}`);
   console.log(`Bridge API: http://localhost:${PORT}/_bridge/`);
   console.log(`WebSocket: ws://localhost:${PORT}/ws/:sessionId?key=...`);
   console.log(`Dev server preview: proxied from port ${DEV_SERVER_PORT}`);
   console.log(`Claude mode: ${process.env.CLAUDE_MODE || 'sdk'}`);
+  logStartupConfigSummary();
 
   void initTunnelAndRegister();
 });
